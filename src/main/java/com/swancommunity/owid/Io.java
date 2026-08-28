@@ -114,11 +114,10 @@ final class Io {
 
         /** Reads an unsigned 32 bit integer in little endian byte order. */
         long readUInt32() throws OwidException {
-            byte[] bytes = readBytes(4);
-            return ((long) (bytes[0] & 0xFF))
-                    | ((long) (bytes[1] & 0xFF) << 8)
-                    | ((long) (bytes[2] & 0xFF) << 16)
-                    | ((long) (bytes[3] & 0xFF) << 24);
+            return ((long) readByte())
+                    | ((long) readByte() << 8)
+                    | ((long) readByte() << 16)
+                    | ((long) readByte() << 24);
         }
 
         /**

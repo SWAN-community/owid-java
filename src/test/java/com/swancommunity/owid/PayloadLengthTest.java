@@ -121,6 +121,22 @@ class PayloadLengthTest {
     }
 
     /**
+     * A payload materially larger than an ordinary identifier remains valid
+     * when its declaration and bytes agree. Size policy belongs to the
+     * application rather than format parsing.
+     */
+    @Test
+    void matchingOneMebibytePayloadParses() throws OwidException {
+        byte[] payload = filled(1024 * 1024, (byte) 0x5A);
+
+        Owid owid = Owid.fromByteArray(
+                envelope(payload.length, payload, SIGNATURE));
+
+        assertEquals(payload.length, owid.getPayloadLength());
+        assertArrayEquals(payload, owid.getPayload());
+    }
+
+    /**
      * An OWID signed through the library's own creator still parses from
      * its own serialised bytes, so the check agrees with what the library
      * itself produces.
@@ -177,15 +193,16 @@ class PayloadLengthTest {
     }
 
     /**
-     * A declared length far beyond the bytes present is refused without an
-     * allocation sized by the declared number. The envelope is a few dozen
-     * bytes and declares 64 MiB, then 2 GiB, then the largest unsigned 32
-     * bit value, and each parse allocates under 64 KiB. Measuring the bytes
-     * allocated on this thread is what proves the refusal happened before
-     * any array was sized from the declared number.
+     * A large declaration whose payload bytes are absent is refused without
+     * an allocation sized by the declared number. The envelope is a few
+     * dozen bytes while declaring 64 MiB, then 2 GiB, then the largest
+     * unsigned 32 bit value, and each parse allocates under 64 KiB. The
+     * numeric values remain valid when the matching payload is present.
+     * Measuring the bytes allocated on this thread proves the refusal
+     * happened before any array was sized from the declaration.
      */
     @Test
-    void hugeDeclaredLengthRefusedWithoutAllocating() {
+    void mismatchedLargeDeclarationRefusedWithoutAllocating() {
         long[] declaredLengths = {
             64L * 1024 * 1024,
             0x7FFFFFFFL,
