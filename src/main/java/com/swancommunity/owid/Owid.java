@@ -42,7 +42,8 @@ import java.util.List;
  *   <li>date: four little endian bytes counting minutes since
  *       2020-01-01 UTC (two big endian bytes counting hours for version 1).</li>
  *   <li>payload: a four byte little endian length followed by the bytes.</li>
- *   <li>signature: 64 bytes, the r and s values concatenated.</li>
+ *   <li>signature: 64 bytes, the r and s values concatenated. Nothing
+ *       follows the signature.</li>
  * </ul>
  */
 public final class Owid {
@@ -106,8 +107,10 @@ public final class Owid {
      *
      * @param buffer the serialized OWID bytes
      * @return the parsed OWID
-     * @throws OwidException if the first byte is not a known version, or the
-     *                       buffer is too short for the remaining fields
+     * @throws OwidException if the first byte is not a known version, the
+     *                       buffer is too short for the remaining fields, or
+     *                       the declared payload length does not leave
+     *                       exactly the 64 byte signature at the end
      */
     public static Owid fromByteArray(byte[] buffer) throws OwidException {
         return fromReader(new Io.Reader(buffer));

@@ -73,6 +73,11 @@ final class Io {
             return buffer[position++] & 0xFF;
         }
 
+        /**
+         * Copies the next count bytes. The end of the buffer is checked
+         * before the copy is sized, so a count beyond the bytes present is
+         * refused without allocating.
+         */
         private byte[] readBytes(int count) throws OwidException {
             if (count < 0) {
                 throw new OwidException("payload length is negative");
@@ -117,14 +122,24 @@ final class Io {
         }
 
         /**
-         * Reads a byte array prefixed with its length as an unsigned 32 bit
-         * integer.
+         * Reads the length prefixed payload. The count is whatever the sender
+         * declared, so it is checked against the bytes actually present
+         * before anything is sized by it. A valid OWID is the declared
+         * payload followed by the signature and nothing else, so the count
+         * must equal the bytes remaining less the signature length, and any
+         * other count, short or long, is refused here. The same check refuses
+         * an envelope with bytes after the signature, which was previously
+         * accepted and ignored, and one whose signature is short.
          */
         byte[] readByteArray() throws OwidException {
             long count = readUInt32();
-            if (count > Integer.MAX_VALUE) {
-                throw new OwidException("payload length '" + count
-                        + "' exceeds the maximum supported length");
+            long remaining = (long) buffer.length - position;
+            long expected = count + Owid.SIGNATURE_LENGTH;
+            if (remaining != expected) {
+                throw new OwidException("OWID payload length '" + count
+                        + "' does not match the '" + remaining
+                        + "' bytes present, of which the final '"
+                        + Owid.SIGNATURE_LENGTH + "' must be the signature");
             }
             return readBytes((int) count);
         }
