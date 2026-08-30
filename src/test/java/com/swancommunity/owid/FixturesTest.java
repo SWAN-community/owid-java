@@ -133,22 +133,22 @@ class FixturesTest {
         Crypto crypto = Crypto.newVerifyOnly(fixtures.spki());
         List<Owid> none = Collections.emptyList();
 
-        Owid simple = ParseAssert.parsed(Owid.tryParse(fixtures.simple()));
+        Owid simple = ParseAssert.parsed(Owid.parse(fixtures.simple()));
         assertTrue(simple.verifyWithCrypto(crypto, none),
                 "simple should verify");
         assertTrue(simple.verifyWithPublicKey(fixtures.spki(), none),
                 "simple should verify by public key PEM");
 
-        Owid utf8 = ParseAssert.parsed(Owid.tryParse(fixtures.utf8()));
+        Owid utf8 = ParseAssert.parsed(Owid.parse(fixtures.utf8()));
         assertTrue(utf8.verifyWithCrypto(crypto, none), "utf8 should verify");
         org.junit.jupiter.api.Assertions.assertEquals(UTF8_TEXT,
                 utf8.payloadAsString(), "utf8 payload text should match");
 
-        Owid root = ParseAssert.parsed(Owid.tryParse(fixtures.chainRoot()));
+        Owid root = ParseAssert.parsed(Owid.parse(fixtures.chainRoot()));
         assertTrue(root.verifyWithCrypto(crypto, none),
                 "chain root should verify alone");
 
-        Owid party = ParseAssert.parsed(Owid.tryParse(fixtures.chainParty()));
+        Owid party = ParseAssert.parsed(Owid.parse(fixtures.chainParty()));
         assertTrue(party.verifyWithCrypto(crypto, Collections.singletonList(root)),
                 "chain party should verify with the root as the other");
         assertFalse(party.verifyWithCrypto(crypto, none),
@@ -158,13 +158,13 @@ class FixturesTest {
         for (String encoded : new String[] {fixtures.simple(), fixtures.utf8(),
                 fixtures.chainRoot()}) {
             byte[] tampered = flipLastByte(Base64.getMimeDecoder().decode(encoded));
-            Owid owid = ParseAssert.parsed(Owid.tryParseBytes(tampered));
+            Owid owid = ParseAssert.parsed(Owid.parse(tampered));
             assertFalse(owid.verifyWithCrypto(crypto, none),
                     "a flipped signature byte should break verification");
         }
         byte[] tamperedParty =
                 flipLastByte(Base64.getMimeDecoder().decode(fixtures.chainParty()));
-        Owid party2 = ParseAssert.parsed(Owid.tryParseBytes(tamperedParty));
+        Owid party2 = ParseAssert.parsed(Owid.parse(tamperedParty));
         assertFalse(party2.verifyWithCrypto(crypto, Collections.singletonList(root)),
                 "a flipped party signature byte should break verification");
     }

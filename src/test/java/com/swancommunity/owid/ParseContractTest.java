@@ -37,6 +37,17 @@ import org.junit.jupiter.api.Test;
  * when it did, and a named reason either way, and no expected failure throws.
  * {@link ParseAssert} checks all three on every case here, so a test cannot
  * pass while the result contradicts itself.</p>
+ *
+ * <p>Every member of {@link OwidParseStatus} is exercised here, with the
+ * domain cases also covered in more depth by {@link DomainLengthTest} and the
+ * byte count cases by {@link PayloadLengthTest}. Two members are not, and
+ * cannot be, being {@link OwidParseStatus#INVALID_INPUT_TYPE}, which the
+ * compiler already refuses, and
+ * {@link OwidParseStatus#IMPLEMENTATION_CAPACITY_EXCEEDED}, which a Java byte
+ * array cannot reach. A third,
+ * {@link OwidParseStatus#MALFORMED_ENVELOPE}, is a backstop with no path to
+ * it while the byte count rule holds. The reason is recorded on each of those
+ * members as well.</p>
  */
 class ParseContractTest {
 
@@ -51,7 +62,7 @@ class ParseContractTest {
      */
     @Test
     void successReportsAllThreeFacts() {
-        OwidParseResult result = Owid.tryParseBytes(wellFormed());
+        OwidParseResult result = Owid.parse(wellFormed());
 
         assertTrue(result.isSuccess(), "should report success");
         assertNotNull(result.getValue(), "should hand back the OWID");
@@ -65,7 +76,7 @@ class ParseContractTest {
     @Test
     void emptyPayloadParses() {
         Owid owid = ParseAssert.parsed(
-                Owid.tryParseBytes(Envelope.version3(new byte[0])));
+                Owid.parse(Envelope.version3(new byte[0])));
 
         assertEquals(0, owid.getPayloadLength(),
                 "should read an empty payload");
@@ -82,7 +93,7 @@ class ParseContractTest {
         String encoded = Base64.getEncoder().encodeToString(
                 Envelope.version3(payload));
 
-        Owid owid = ParseAssert.parsed(Owid.tryParse(encoded));
+        Owid owid = ParseAssert.parsed(Owid.parse(encoded));
 
         assertEquals(payload.length, owid.getPayloadLength(),
                 "should read the whole payload");
@@ -93,11 +104,12 @@ class ParseContractTest {
     /** Nothing to read is its own answer, on both surfaces. */
     @Test
     void absentInputIsMissingInput() {
-        ParseAssert.failed(Owid.tryParse(null), OwidParseStatus.MISSING_INPUT);
-        ParseAssert.failed(Owid.tryParse(""), OwidParseStatus.MISSING_INPUT);
-        ParseAssert.failed(Owid.tryParseBytes(null),
+        ParseAssert.failed(Owid.parse((String) null),
                 OwidParseStatus.MISSING_INPUT);
-        ParseAssert.failed(Owid.tryParseBytes(new byte[0]),
+        ParseAssert.failed(Owid.parse(""), OwidParseStatus.MISSING_INPUT);
+        ParseAssert.failed(Owid.parse((byte[]) null),
+                OwidParseStatus.MISSING_INPUT);
+        ParseAssert.failed(Owid.parse(new byte[0]),
                 OwidParseStatus.MISSING_INPUT);
     }
 
@@ -117,7 +129,7 @@ class ParseContractTest {
         };
         for (String value : values) {
             OwidParseResult result = assertDoesNotThrow(
-                    () -> Owid.tryParse(value),
+                    () -> Owid.parse(value),
                     "should not throw for a value that is not base 64");
             ParseAssert.failed(result, OwidParseStatus.INVALID_BASE64);
         }
@@ -132,8 +144,8 @@ class ParseContractTest {
         String padded = Base64.getEncoder().encodeToString(wellFormed());
         String unpadded = padded.replace("=", "");
 
-        Owid fromPadded = ParseAssert.parsed(Owid.tryParse(padded));
-        Owid fromUnpadded = ParseAssert.parsed(Owid.tryParse(unpadded));
+        Owid fromPadded = ParseAssert.parsed(Owid.parse(padded));
+        Owid fromUnpadded = ParseAssert.parsed(Owid.parse(unpadded));
 
         assertEquals(fromPadded, fromUnpadded,
                 "padding should make no difference to what is read");
@@ -145,7 +157,7 @@ class ParseContractTest {
         byte[] bytes = wellFormed();
         bytes[0] = 0x04;
 
-        ParseAssert.failed(Owid.tryParseBytes(bytes),
+        ParseAssert.failed(Owid.parse(bytes),
                 OwidParseStatus.UNSUPPORTED_VERSION);
     }
 
@@ -160,33 +172,77 @@ class ParseContractTest {
 
         // Inside the domain, with no terminator reached.
         ParseAssert.failed(
-                Owid.tryParseBytes(Arrays.copyOf(complete, domainEnd - 2)),
+                Owid.parse(Arrays.copyOf(complete, domainEnd - 2)),
                 OwidParseStatus.UNEXPECTED_END);
 
         // Inside the date, two of its four bytes present.
         ParseAssert.failed(
-                Owid.tryParseBytes(Arrays.copyOf(complete, domainEnd + 2)),
+                Owid.parse(Arrays.copyOf(complete, domainEnd + 2)),
                 OwidParseStatus.UNEXPECTED_END);
 
         // Inside the payload length field, two of its four bytes present.
         ParseAssert.failed(
-                Owid.tryParseBytes(Arrays.copyOf(complete, domainEnd + 6)),
+                Owid.parse(Arrays.copyOf(complete, domainEnd + 6)),
                 OwidParseStatus.UNEXPECTED_END);
     }
 
     /**
-     * The marker for an absent optional OWID is the single version byte, so
-     * it reads, and anything after it belongs to no field.
+     * A domain that never terminates, or runs past the published maximum
+     * before it does, is a domain that cannot be valid rather than data that
+     * merely stopped. {@link DomainLengthTest} covers the bound itself and
+     * the cost of refusing a hostile field.
      */
     @Test
-    void emptyMarkerParsesAndTrailingBytesDoNot() {
-        Owid owid = ParseAssert.parsed(
-                Owid.tryParseBytes(Owid.emptyByteArray()));
-        assertEquals(Version.EMPTY, owid.getVersion(),
-                "should read the empty marker");
+    void badDomainIsInvalidDomainEncoding() {
+        // Terminated, but longer than a domain name is allowed to be.
+        StringBuilder tooLong = new StringBuilder();
+        while (tooLong.length() <= Io.MAXIMUM_DOMAIN_LENGTH) {
+            tooLong.append('a');
+        }
+        ParseAssert.failed(
+                Owid.parse(Envelope.version3(tooLong.toString(), 1000L, 0,
+                        new byte[0], Envelope.signature())),
+                OwidParseStatus.INVALID_DOMAIN_ENCODING);
 
-        ParseAssert.failed(Owid.tryParseBytes(new byte[] {0, 1}),
-                OwidParseStatus.MALFORMED_ENVELOPE);
+        // Never terminated, in a buffer long enough that the walk has to stop
+        // itself rather than run out of bytes.
+        byte[] unterminated = Envelope.filled(64 * 1024, (byte) 'a');
+        unterminated[0] = Version.VERSION3.asByte();
+        ParseAssert.failed(Owid.parse(unterminated),
+                OwidParseStatus.INVALID_DOMAIN_ENCODING);
+    }
+
+    /**
+     * A declared payload count that disagrees with the bytes present is
+     * refused before anything is sized by it. {@link PayloadLengthTest}
+     * covers the counts in every direction and proves nothing is allocated.
+     */
+    @Test
+    void disagreeingByteCountIsByteCountMismatch() {
+        byte[] complete = wellFormed();
+        byte[] longer = Arrays.copyOf(complete, complete.length + 1);
+
+        ParseAssert.failed(Owid.parse(longer),
+                OwidParseStatus.BYTE_COUNT_MISMATCH);
+    }
+
+    /**
+     * The marker for an absent optional OWID is refused by the whole buffer
+     * read.
+     *
+     * <p>It stands for the absence of an identifier rather than for one, and
+     * it carries no domain, no date and no signature, so handing one back
+     * would put an OWID in a caller's hands that nothing had ever signed.
+     * That is the state the construction boundary exists to prevent, and it
+     * could never verify. A framed reader, which this library does not have,
+     * would still read the marker as the absence it means.</p>
+     */
+    @Test
+    void emptyMarkerIsRefused() {
+        ParseAssert.failed(Owid.parse(Owid.emptyByteArray()),
+                OwidParseStatus.UNSUPPORTED_VERSION);
+        ParseAssert.failed(Owid.parse(new byte[] {0, 1}),
+                OwidParseStatus.UNSUPPORTED_VERSION);
     }
 
     /**
@@ -205,10 +261,10 @@ class ParseContractTest {
         // only the signature stops describing the contents.
         bytes[bytes.length - Owid.SIGNATURE_LENGTH - 1] ^= 0x01;
 
-        Owid owid = ParseAssert.parsed(Owid.tryParseBytes(bytes));
+        Owid owid = ParseAssert.parsed(Owid.parse(bytes));
 
         OwidVerificationResult verification =
-                owid.verifyDetailed(crypto, Collections.<Owid>emptyList());
+                owid.verify(crypto, Collections.<Owid>emptyList());
         assertEquals(OwidSignatureStatus.SIGNATURE_INVALID,
                 verification.getStatus(),
                 "the signature should be reported as not matching");
@@ -227,7 +283,7 @@ class ParseContractTest {
     void readingTakesNoKeyAndNoCrypto() {
         int checked = 0;
         for (Method method : Owid.class.getDeclaredMethods()) {
-            if (method.getName().startsWith("tryParse") == false) {
+            if (method.getName().equals("parse") == false) {
                 continue;
             }
             checked++;
@@ -270,7 +326,7 @@ class ParseContractTest {
             byte[] input = bytes;
 
             OwidParseResult result = assertDoesNotThrow(
-                    () -> Owid.tryParseBytes(input),
+                    () -> Owid.parse(input),
                     "reading should never throw for malformed bytes");
             assertEquals(result.isSuccess(), result.getValue() != null,
                     "the value should be present exactly when it worked");
@@ -280,7 +336,7 @@ class ParseContractTest {
 
             String encoded = Base64.getEncoder().encodeToString(input);
             OwidParseResult fromText = assertDoesNotThrow(
-                    () -> Owid.tryParse(encoded),
+                    () -> Owid.parse(encoded),
                     "reading should never throw for malformed text");
             assertEquals(fromText.isSuccess(), fromText.getValue() != null,
                     "the value should be present exactly when it worked");
@@ -295,7 +351,7 @@ class ParseContractTest {
     void failureCarriesNoneOfTheInput() {
         String secret = "cGFzc3dvcmRwYXNzd29yZHBhc3N3b3Jk";
 
-        OwidParseResult result = Owid.tryParse(secret);
+        OwidParseResult result = Owid.parse(secret);
 
         ParseAssert.failed(result, OwidParseStatus.UNSUPPORTED_VERSION);
         assertEquals(OwidParseStatus.UNSUPPORTED_VERSION.name(),

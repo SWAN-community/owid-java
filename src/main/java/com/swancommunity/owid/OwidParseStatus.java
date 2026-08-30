@@ -91,6 +91,17 @@ public enum OwidParseStatus {
      * The envelope is malformed in a way none of the others describes. A
      * fallback for the genuinely unclassified, not a substitute for naming a
      * failure that is already understood.
+     *
+     * <p>Not reachable in Java today, and so not covered by a test. Every
+     * failure this reader can meet is classified by one of the members above,
+     * and the one place that still reports this is the check that the
+     * envelope ended where the buffer did, which cannot fire while the
+     * declared payload count has already been required to leave exactly the
+     * signature. That check is kept as a backstop rather than removed,
+     * because a future change to the count arithmetic would otherwise start
+     * accepting bytes after the signature in silence. Loosening the count
+     * rule during a deliberate check of the tests made this status appear, so
+     * the backstop does work.</p>
      */
     MALFORMED_ENVELOPE
 }

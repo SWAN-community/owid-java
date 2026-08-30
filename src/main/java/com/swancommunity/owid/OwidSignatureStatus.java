@@ -51,6 +51,12 @@ public enum OwidSignatureStatus {
      * {@link OwidParseStatus#UNEXPECTED_END} or
      * {@link OwidParseStatus#BYTE_COUNT_MISMATCH} instead, because there the
      * envelope never formed.
+     *
+     * <p>A consumer of this library cannot produce it, because both routes an
+     * OWID arrives by settle the signature at the length the version
+     * requires. It is kept, and tested from inside the library, because the
+     * status is part of the cross language vocabulary and other surfaces can
+     * be handed a signature field on its own.</p>
      */
     INVALID_SIGNATURE_LENGTH,
 
@@ -67,9 +73,14 @@ public enum OwidSignatureStatus {
     INVALID_KEY,
 
     /**
-     * The work required is more than this runtime can hold. Reaching it
-     * needs an OWID and its chain to approach the two gigabyte limit of a
-     * Java array.
+     * The work required is more than this runtime can hold.
+     *
+     * <p>Not covered by a test, because reaching it needs an OWID and its
+     * chain to approach the two gigabyte limit of a Java array, which cannot
+     * be built in a test suite that has to run on an ordinary machine. The
+     * path to it is real, being the overflow guard on the serialized length,
+     * which raises a distinct exception so this status does not have to be
+     * told apart from {@link #VERIFICATION_ERROR} by reading a message.</p>
      */
     IMPLEMENTATION_CAPACITY_EXCEEDED,
 

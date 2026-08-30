@@ -53,7 +53,7 @@ class IoTest {
         assertArrayEquals(expected.toByteArray(), buffer.toByteArray(),
                 "should write the minute count little endian");
 
-        Owid owid = ParseAssert.parsed(Owid.tryParseBytes(
+        Owid owid = ParseAssert.parsed(Owid.parse(
                 Envelope.version3(Envelope.DOMAIN, minutes, PAYLOAD.length,
                         PAYLOAD, Envelope.signature())));
         assertEquals(date, owid.getDate(),
@@ -70,7 +70,7 @@ class IoTest {
         assertArrayEquals(new byte[] {0x30, 0x39}, buffer.toByteArray(),
                 "should write the hour count big endian");
 
-        Owid owid = ParseAssert.parsed(Owid.tryParseBytes(
+        Owid owid = ParseAssert.parsed(Owid.parse(
                 Envelope.version1(Envelope.DOMAIN, 12_345L, PAYLOAD.length,
                         PAYLOAD, Envelope.signature())));
         assertEquals(date, owid.getDate(), "should keep hour granularity");
@@ -92,7 +92,7 @@ class IoTest {
         byte[] bytes = buffer.toByteArray();
         assertEquals(0, bytes[bytes.length - 1], "should be null terminated");
 
-        Owid owid = ParseAssert.parsed(Owid.tryParseBytes(
+        Owid owid = ParseAssert.parsed(Owid.parse(
                 Envelope.version3("example.com", 1000L, PAYLOAD.length,
                         PAYLOAD, Envelope.signature())));
         assertEquals("example.com", owid.getDomain(),
@@ -116,7 +116,7 @@ class IoTest {
 
         // The same four bytes read back through the date field, which is the
         // one place a whole unsigned 32 bit value reaches the reader.
-        Owid owid = ParseAssert.parsed(Owid.tryParseBytes(
+        Owid owid = ParseAssert.parsed(Owid.parse(
                 Envelope.version3(Envelope.DOMAIN, 0x0A242B01L, PAYLOAD.length,
                         PAYLOAD, Envelope.signature())));
         assertEquals(Io.baseDate().plus(Duration.ofMinutes(0x0A242B01L)),
@@ -134,7 +134,7 @@ class IoTest {
         assertArrayEquals(signature, buffer.toByteArray(),
                 "should write the signature bytes unchanged");
 
-        Owid owid = ParseAssert.parsed(Owid.tryParseBytes(
+        Owid owid = ParseAssert.parsed(Owid.parse(
                 Envelope.version3(Envelope.DOMAIN, 1000L, PAYLOAD.length,
                         PAYLOAD, signature)));
         assertArrayEquals(signature, owid.getSignature(),

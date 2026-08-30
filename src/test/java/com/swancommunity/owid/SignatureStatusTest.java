@@ -32,6 +32,12 @@ import org.junit.jupiter.api.Test;
  * unjudged. Reporting that as invalid would tell a caller an identifier had
  * been tampered with when all that happened is an outage, and a caller acting
  * on it would reject good identifiers.</p>
+ *
+ * <p>Every member of {@link OwidSignatureStatus} is exercised here except
+ * {@link OwidSignatureStatus#IMPLEMENTATION_CAPACITY_EXCEEDED}, which needs
+ * an OWID and its chain to approach the two gigabyte limit of a Java array
+ * and so cannot be built in a suite that has to run on an ordinary machine.
+ * The reason is recorded on the member itself as well.</p>
  */
 class SignatureStatusTest {
 
@@ -48,7 +54,7 @@ class SignatureStatusTest {
         Owid owid = Creator.create("example.com", crypto)
                 .createString("payload");
 
-        OwidVerificationResult result = owid.verifyDetailed(crypto, NONE);
+        OwidVerificationResult result = owid.verify(crypto, NONE);
 
         assertTrue(result.isValid(), "a genuine signature should be valid");
         assertEquals(OwidSignatureStatus.SIGNATURE_VALID, result.getStatus(),
@@ -62,7 +68,7 @@ class SignatureStatusTest {
         Owid owid = Creator.create("example.com", crypto)
                 .createString("payload");
 
-        OwidVerificationResult result = owid.verifyDetailedWithPublicKey(
+        OwidVerificationResult result = owid.verify(
                 crypto.publicKeyPem(), NONE);
 
         assertEquals(OwidSignatureStatus.SIGNATURE_VALID, result.getStatus(),
@@ -79,7 +85,7 @@ class SignatureStatusTest {
                 .createString("payload");
 
         OwidVerificationResult result =
-                owid.verifyDetailed(crypto(), NONE);
+                owid.verify(crypto(), NONE);
 
         assertFalse(result.isValid(), "the signature should not be valid");
         assertEquals(OwidSignatureStatus.SIGNATURE_INVALID, result.getStatus(),
@@ -96,13 +102,13 @@ class SignatureStatusTest {
                 .createString("payload");
 
         assertEquals(OwidSignatureStatus.KEY_UNAVAILABLE,
-                owid.verifyDetailed(null, NONE).getStatus(),
+                owid.verify((Crypto) null, NONE).getStatus(),
                 "a missing crypto instance should not judge the signature");
         assertEquals(OwidSignatureStatus.KEY_UNAVAILABLE,
-                owid.verifyDetailedWithPublicKey(null, NONE).getStatus(),
+                owid.verify((String) null, NONE).getStatus(),
                 "a missing PEM should not judge the signature");
         assertEquals(OwidSignatureStatus.KEY_UNAVAILABLE,
-                owid.verifyDetailedWithPublicKey("   ", NONE).getStatus(),
+                owid.verify("   ", NONE).getStatus(),
                 "an empty PEM should not judge the signature");
     }
 
@@ -119,11 +125,11 @@ class SignatureStatusTest {
                 .createString("payload");
 
         assertEquals(OwidSignatureStatus.INVALID_KEY,
-                owid.verifyDetailedWithPublicKey("not a PEM", NONE)
+                owid.verify("not a PEM", NONE)
                         .getStatus(),
                 "material that is not a key should be reported as the key");
         assertEquals(OwidSignatureStatus.INVALID_KEY,
-                owid.verifyDetailedWithPublicKey(
+                owid.verify(
                         "-----BEGIN PUBLIC KEY-----\nAAAA\n"
                                 + "-----END PUBLIC KEY-----\n", NONE)
                         .getStatus(),
@@ -132,17 +138,30 @@ class SignatureStatusTest {
 
     /**
      * A signature field that is not the length the version requires cannot be
-     * checked. The marker for an absent optional OWID is the one thing that
-     * reaches a verification surface with no signature at all.
+     * checked, and saying so is not the same as saying the signature is
+     * wrong.
+     *
+     * <p>The OWID is built here through the package private constructor,
+     * because a consumer cannot produce one: both routes an OWID arrives by,
+     * being a read and a creator, settle the signature at 64 bytes. The
+     * status is part of the cross language vocabulary and other surfaces can
+     * be handed a signature field on its own, so the branch is exercised from
+     * inside the package where it can be reached.</p>
      */
     @Test
-    void missingSignatureIsInvalidSignatureLength() throws OwidException {
-        Owid marker = ParseAssert.parsed(
-                Owid.tryParseBytes(Owid.emptyByteArray()));
+    void wrongLengthSignatureIsInvalidSignatureLength() throws OwidException {
+        Owid noSignature = new Owid(Version.current(), "example.com",
+                Io.baseDate(), new byte[0], new byte[0]);
+        Owid shortSignature = new Owid(Version.current(), "example.com",
+                Io.baseDate(), new byte[0],
+                Envelope.filled(Owid.SIGNATURE_LENGTH - 1, (byte) 1));
 
         assertEquals(OwidSignatureStatus.INVALID_SIGNATURE_LENGTH,
-                marker.verifyDetailed(crypto(), NONE).getStatus(),
+                noSignature.verify(crypto(), NONE).getStatus(),
                 "no signature is not the same as a signature that is wrong");
+        assertEquals(OwidSignatureStatus.INVALID_SIGNATURE_LENGTH,
+                shortSignature.verify(crypto(), NONE).getStatus(),
+                "a 63 byte signature is not a signature that is wrong");
     }
 
     /**
@@ -162,7 +181,7 @@ class SignatureStatusTest {
                 Envelope.filled(Owid.SIGNATURE_LENGTH, (byte) 1));
 
         assertEquals(OwidSignatureStatus.VERIFICATION_ERROR,
-                owid.verifyDetailed(crypto(), NONE).getStatus(),
+                owid.verify(crypto(), NONE).getStatus(),
                 "a field that cannot be encoded is not an invalid signature");
     }
 

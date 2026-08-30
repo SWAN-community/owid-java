@@ -26,7 +26,15 @@ package com.swancommunity.owid;
  */
 public enum Version {
 
-    /** Marker used to indicate an optional OWID that is not present. */
+    /**
+     * Marker used to indicate an optional OWID that is not present, inside a
+     * larger framed byte array.
+     *
+     * <p>No OWID carries this version. A whole buffer holding nothing but the
+     * marker holds no identifier, so {@link Owid#parse(byte[])} refuses it as
+     * {@link OwidParseStatus#UNSUPPORTED_VERSION} rather than handing back
+     * something nothing has ever signed.</p>
+     */
     EMPTY(0),
 
     /**

@@ -110,7 +110,7 @@ class PayloadLengthTest {
      */
     @Test
     void declaredLengthMatchesParses() {
-        Owid owid = ParseAssert.parsed(Owid.tryParseBytes(
+        Owid owid = ParseAssert.parsed(Owid.parse(
                 envelope(PAYLOAD.length, PAYLOAD, SIGNATURE)));
         assertArrayEquals(PAYLOAD, owid.getPayload(),
                 "should read the payload back unchanged");
@@ -128,7 +128,7 @@ class PayloadLengthTest {
     void matchingOneMebibytePayloadParses() {
         byte[] payload = filled(1024 * 1024, (byte) 0x5A);
 
-        Owid owid = ParseAssert.parsed(Owid.tryParseBytes(
+        Owid owid = ParseAssert.parsed(Owid.parse(
                 envelope(payload.length, payload, SIGNATURE)));
 
         assertEquals(payload.length, owid.getPayloadLength());
@@ -146,7 +146,7 @@ class PayloadLengthTest {
         Creator creator = Creator.create(DOMAIN, crypto);
         Owid original = creator.createBytes(PAYLOAD);
         Owid parsed = ParseAssert.parsed(
-                Owid.tryParseBytes(original.asByteArray()));
+                Owid.parse(original.asByteArray()));
         assertArrayEquals(PAYLOAD, parsed.getPayload(),
                 "should read the payload the library wrote");
         assertEquals(original, parsed, "should parse to an equal OWID");
@@ -163,7 +163,7 @@ class PayloadLengthTest {
         int[] declaredLengths = {PAYLOAD.length - 1, PAYLOAD.length + 1};
         for (int declared : declaredLengths) {
             byte[] bytes = envelope(declared, PAYLOAD, SIGNATURE);
-            ParseAssert.failed(Owid.tryParseBytes(bytes),
+            ParseAssert.failed(Owid.parse(bytes),
                     OwidParseStatus.BYTE_COUNT_MISMATCH);
         }
     }
@@ -176,7 +176,7 @@ class PayloadLengthTest {
     void trailingByteAfterSignatureRefused() {
         byte[] bytes = envelope(PAYLOAD.length, PAYLOAD, SIGNATURE);
         byte[] longer = Arrays.copyOf(bytes, bytes.length + 1);
-        ParseAssert.failed(Owid.tryParseBytes(longer),
+        ParseAssert.failed(Owid.parse(longer),
                 OwidParseStatus.BYTE_COUNT_MISMATCH);
     }
 
@@ -191,7 +191,7 @@ class PayloadLengthTest {
     void shortSignatureRefused() {
         byte[] bytes = envelope(PAYLOAD.length, PAYLOAD,
                 filled(SIGNATURE_LENGTH - 1, (byte) 0x99));
-        ParseAssert.failed(Owid.tryParseBytes(bytes),
+        ParseAssert.failed(Owid.parse(bytes),
                 OwidParseStatus.BYTE_COUNT_MISMATCH);
     }
 
@@ -214,7 +214,7 @@ class PayloadLengthTest {
         for (long declared : declaredLengths) {
             byte[] bytes = envelope(declared, new byte[0], new byte[0]);
             long before = allocatedBytes();
-            OwidParseResult result = Owid.tryParseBytes(bytes);
+            OwidParseResult result = Owid.parse(bytes);
             long allocated = allocatedBytes() - before;
             ParseAssert.failed(result, OwidParseStatus.BYTE_COUNT_MISMATCH);
             assertTrue(allocated < ALLOCATION_BOUND, "declared " + declared
@@ -230,7 +230,7 @@ class PayloadLengthTest {
     @Test
     void emptyPayloadParses() {
         Owid owid = ParseAssert.parsed(
-                Owid.tryParseBytes(envelope(0, new byte[0], SIGNATURE)));
+                Owid.parse(envelope(0, new byte[0], SIGNATURE)));
         assertEquals(0, owid.getPayload().length,
                 "should read an empty payload");
         assertArrayEquals(SIGNATURE, owid.getSignature(),

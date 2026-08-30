@@ -140,7 +140,7 @@ class DomainLengthTest {
         String domain = domainOfLength(MAXIMUM);
         byte[] bytes = envelope(ascii(domain));
 
-        Owid owid = ParseAssert.parsed(Owid.tryParseBytes(bytes));
+        Owid owid = ParseAssert.parsed(Owid.parse(bytes));
 
         assertEquals(MAXIMUM, owid.getDomain().length(),
                 "should read a domain of the published maximum length");
@@ -150,7 +150,7 @@ class DomainLengthTest {
         assertArrayEquals(bytes, owid.asByteArray(),
                 "should write the same bytes back out");
         assertEquals(owid,
-                ParseAssert.parsed(Owid.tryParseBytes(owid.asByteArray())),
+                ParseAssert.parsed(Owid.parse(owid.asByteArray())),
                 "should parse its own output to an equal OWID");
     }
 
@@ -162,7 +162,7 @@ class DomainLengthTest {
     void overMaximumLengthDomainRefused() {
         byte[] bytes = envelope(ascii(domainOfLength(MAXIMUM + 1)));
 
-        ParseAssert.failed(Owid.tryParseBytes(bytes),
+        ParseAssert.failed(Owid.parse(bytes),
                 OwidParseStatus.INVALID_DOMAIN_ENCODING);
     }
 
@@ -176,7 +176,7 @@ class DomainLengthTest {
         byte[] bytes = filled(64 * 1024, (byte) 'a');
         bytes[0] = Version.VERSION3.asByte();
 
-        ParseAssert.failed(Owid.tryParseBytes(bytes),
+        ParseAssert.failed(Owid.parse(bytes),
                 OwidParseStatus.INVALID_DOMAIN_ENCODING);
     }
 
@@ -192,7 +192,7 @@ class DomainLengthTest {
         byte[] bytes = envelope(filled(HOSTILE_DOMAIN_LENGTH, (byte) 'a'));
 
         long before = allocatedBytes();
-        OwidParseResult result = Owid.tryParseBytes(bytes);
+        OwidParseResult result = Owid.parse(bytes);
         long allocated = allocatedBytes() - before;
         ParseAssert.failed(result, OwidParseStatus.INVALID_DOMAIN_ENCODING);
 
@@ -214,7 +214,7 @@ class DomainLengthTest {
 
         Owid signed = creator.createBytes(PAYLOAD);
         Owid parsed = ParseAssert.parsed(
-                Owid.tryParseBytes(signed.asByteArray()));
+                Owid.parse(signed.asByteArray()));
 
         assertEquals(MAXIMUM, parsed.getDomain().length(),
                 "should write and read a domain of the published maximum");
@@ -315,7 +315,7 @@ class DomainLengthTest {
         Owid original = creator.createBytes(PAYLOAD);
 
         Owid parsed = ParseAssert.parsed(
-                Owid.tryParseBytes(original.asByteArray()));
+                Owid.parse(original.asByteArray()));
 
         assertEquals("51d.es", parsed.getDomain(),
                 "should read the domain the library wrote");

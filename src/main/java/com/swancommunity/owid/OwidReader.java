@@ -46,28 +46,29 @@ final class OwidReader {
 
     /** Reads one complete OWID occupying the whole of the buffer. */
     static OwidParseResult read(byte[] buffer) {
+        // Nothing supplied is not the same as data that stopped part way
+        // through a field, so a buffer with no bytes in it is reported as the
+        // absence it is rather than as a truncation.
         if (buffer == null || buffer.length == 0) {
             return OwidParseResult.failed(OwidParseStatus.MISSING_INPUT);
         }
 
         int total = buffer.length;
         Version version = Version.forByte(buffer[0] & 0xFF);
-        if (version == null) {
+        if (version == null || version == Version.EMPTY) {
+            // The empty marker, being the single byte zero, is refused here
+            // along with the versions this implementation does not know. It
+            // stands for an absent node inside a framed stream rather than
+            // for an identifier, so what it carries is no domain, no date and
+            // no signature, and handing one back would put an OWID in a
+            // caller's hands that nothing had ever signed. That is the state
+            // the construction boundary exists to prevent, and it could never
+            // verify. A framed reader, which this library does not have,
+            // would still read the marker as the absence it means.
             return OwidParseResult.failed(
                     OwidParseStatus.UNSUPPORTED_VERSION);
         }
         int at = 1;
-
-        if (version == Version.EMPTY) {
-            // The marker for an absent optional OWID is the version byte and
-            // nothing else, so anything after it belongs to no field.
-            if (at != total) {
-                return OwidParseResult.failed(
-                        OwidParseStatus.MALFORMED_ENVELOPE);
-            }
-            return OwidParseResult.parsed(new Owid(
-                    version, "", Io.baseDate(), new byte[0], new byte[0]));
-        }
 
         // The domain, terminated by a zero byte and no longer than the
         // maximum published for a domain name. The walk stops at that

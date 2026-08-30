@@ -57,7 +57,7 @@ class ReadmeExampleTest {
         // Later, or elsewhere, read it back. Reading answers rather than
         // throwing, because whatever arrives from outside may not be an OWID
         // at all.
-        OwidParseResult result = Owid.tryParse(encoded);
+        OwidParseResult result = Owid.parse(encoded);
         if (result.isSuccess()) {
             Owid copy = result.getValue();
             String publicPem = crypto.publicKeyPem();

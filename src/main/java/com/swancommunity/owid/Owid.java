@@ -33,8 +33,8 @@ import java.util.List;
  *
  * <p>An OWID is only worth anything because it is signed, so a caller cannot
  * build one. An instance reaches calling code by one of two routes, being
- * {@link #tryParse(String)} or {@link #tryParseBytes(byte[])} reading bytes
- * that were already a complete OWID, or {@link Creator#createBytes(byte[])}
+ * {@link #parse(String)} or {@link #parse(byte[])} reading bytes that were
+ * already a complete OWID, or {@link Creator#createBytes(byte[])}
  * and its companions signing one into existence. There is deliberately no way
  * to assemble a half made one, because an unsigned OWID is indistinguishable
  * from a signed one to the code downstream of it and the difference only
@@ -106,13 +106,13 @@ public final class Owid {
      *
      * <p>A successful read says the bytes are a structurally valid OWID. It
      * says nothing about whether the signature is genuine, which is a
-     * separate question answered by {@link #verifyDetailed(Crypto, List)}.</p>
+     * separate question answered by {@link #verify(Crypto, List)}.</p>
      *
      * @param value the base 64 encoded OWID, which may be null
      * @return the OWID and {@link OwidParseStatus#PARSED}, or no value and
      *         the reason the string is not an OWID
      */
-    public static OwidParseResult tryParse(String value) {
+    public static OwidParseResult parse(String value) {
         if (value == null || value.isEmpty()) {
             return OwidParseResult.failed(OwidParseStatus.MISSING_INPUT);
         }
@@ -134,7 +134,7 @@ public final class Owid {
      * @return the OWID and {@link OwidParseStatus#PARSED}, or no value and
      *         the reason the bytes are not an OWID
      */
-    public static OwidParseResult tryParseBytes(byte[] buffer) {
+    public static OwidParseResult parse(byte[] buffer) {
         return OwidReader.read(buffer);
     }
 
@@ -169,8 +169,14 @@ public final class Owid {
     }
 
     /**
-     * Writes an empty OWID marker. Used to indicate optional OWIDs in byte
-     * arrays.
+     * Writes the marker for an absent optional OWID, being the single byte
+     * zero, for embedding in a larger framed byte array.
+     *
+     * <p>Reading it back through {@link #parse(byte[])} reports
+     * {@link OwidParseStatus#UNSUPPORTED_VERSION}, because the marker stands
+     * for the absence of an identifier rather than for one, and a whole
+     * buffer holding nothing but the marker holds no OWID. Only a framed
+     * reader, which this library does not have, can make sense of it.</p>
      *
      * @return a single byte array holding the empty marker
      */
@@ -387,8 +393,7 @@ public final class Owid {
      *               in the same order as when signed
      * @return the outcome of the check
      */
-    public OwidVerificationResult verifyDetailed(Crypto crypto,
-            List<Owid> others) {
+    public OwidVerificationResult verify(Crypto crypto, List<Owid> others) {
         if (crypto == null || crypto.canVerify() == false) {
             return OwidVerificationResult.of(
                     OwidSignatureStatus.KEY_UNAVAILABLE);
@@ -420,8 +425,8 @@ public final class Owid {
     }
 
     /**
-     * The same question as {@link #verifyDetailed(Crypto, List)}, starting
-     * from the public key in SPKI PEM form.
+     * The same question as {@link #verify(Crypto, List)}, starting from the
+     * public key in SPKI PEM form.
      *
      * <p>Key material that cannot be decoded reports
      * {@link OwidSignatureStatus#INVALID_KEY}, because the fault is in the
@@ -433,7 +438,7 @@ public final class Owid {
      *                  one, in the same order as when signed
      * @return the outcome of the check
      */
-    public OwidVerificationResult verifyDetailedWithPublicKey(String publicPem,
+    public OwidVerificationResult verify(String publicPem,
             List<Owid> others) {
         if (publicPem == null || publicPem.trim().isEmpty()) {
             return OwidVerificationResult.of(
@@ -446,7 +451,7 @@ public final class Owid {
             return OwidVerificationResult.of(
                     OwidSignatureStatus.INVALID_KEY);
         }
-        return verifyDetailed(crypto, others);
+        return verify(crypto, others);
     }
 
     /**

@@ -58,7 +58,7 @@ public final class OwidParseResult {
      * Whether the bytes were a complete, structurally valid OWID. This says
      * nothing about whether the signature is genuine, which is a separate
      * question answered by
-     * {@link Owid#verifyDetailed(Crypto, java.util.List)}.
+     * {@link Owid#verify(Crypto, java.util.List)}.
      *
      * @return true when the read produced an OWID
      */

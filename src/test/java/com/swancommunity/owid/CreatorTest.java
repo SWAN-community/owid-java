@@ -66,7 +66,7 @@ class CreatorTest {
         Creator creator = Creator.create("example.com", crypto);
         Owid owid = creator.createString("payload");
         String encoded = owid.asBase64();
-        Owid copy = ParseAssert.parsed(Owid.tryParse(encoded));
+        Owid copy = ParseAssert.parsed(Owid.parse(encoded));
         assertTrue(copy.verifyWithPublicKey(crypto.publicKeyPem(),
                 Collections.emptyList()), "the decoded OWID should verify");
     }
@@ -78,7 +78,7 @@ class CreatorTest {
         Owid owid = creator.createBytes(new byte[] {1, 2, 3});
         byte[] bytes = owid.asByteArray();
         bytes[bytes.length - 1] ^= 0x01;
-        Owid tampered = ParseAssert.parsed(Owid.tryParseBytes(bytes));
+        Owid tampered = ParseAssert.parsed(Owid.parse(bytes));
         assertFalse(tampered.verifyWithCrypto(crypto, Collections.emptyList()),
                 "a tampered signature should not verify");
     }

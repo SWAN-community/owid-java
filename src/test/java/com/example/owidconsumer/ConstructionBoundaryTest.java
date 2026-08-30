@@ -161,7 +161,7 @@ class ConstructionBoundaryTest {
                 "party".getBytes(StandardCharsets.UTF_8),
                 Collections.singletonList(root));
 
-        OwidParseResult result = Owid.tryParse(party.asBase64());
+        OwidParseResult result = Owid.parse(party.asBase64());
         assertEquals(OwidParseStatus.PARSED, result.getStatus(),
                 "the created OWID should read back");
         Owid copy = result.getValue();

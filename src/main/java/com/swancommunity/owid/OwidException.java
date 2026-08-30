@@ -23,7 +23,7 @@ package com.swancommunity.owid;
  *
  * <p>Reading a serialized OWID does not raise this. Data that arrived from
  * outside is expected to be malformed sometimes, so
- * {@link Owid#tryParse(String)} and {@link Owid#tryParseBytes(byte[])} report
+ * {@link Owid#parse(String)} and {@link Owid#parse(byte[])} report
  * an {@link OwidParseStatus} instead. What remains here is the caller's own
  * mistakes, such as an invalid creator domain or a field that cannot be
  * serialized, and failures of the cryptography.</p>
