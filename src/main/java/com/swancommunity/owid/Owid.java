@@ -38,7 +38,8 @@ import java.util.List;
  *
  * <ul>
  *   <li>version: a single byte.</li>
- *   <li>domain: the UTF-8 bytes of the domain, null terminated.</li>
+ *   <li>domain: the UTF-8 bytes of the domain, null terminated, no longer
+ *       than the maximum published for a domain name.</li>
  *   <li>date: four little endian bytes counting minutes since
  *       2020-01-01 UTC (two big endian bytes counting hours for version 1).</li>
  *   <li>payload: a four byte little endian length followed by the bytes.</li>
@@ -108,9 +109,11 @@ public final class Owid {
      * @param buffer the serialized OWID bytes
      * @return the parsed OWID
      * @throws OwidException if the first byte is not a known version, the
-     *                       buffer is too short for the remaining fields, or
-     *                       the declared payload length does not leave
-     *                       exactly the 64 byte signature at the end
+     *                       buffer is too short for the remaining fields, the
+     *                       domain is unterminated or longer than the maximum
+     *                       published for a domain name, or the declared
+     *                       payload length does not leave exactly the 64 byte
+     *                       signature at the end
      */
     public static Owid fromByteArray(byte[] buffer) throws OwidException {
         return fromReader(new Io.Reader(buffer));

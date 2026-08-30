@@ -39,6 +39,18 @@ final class Io {
      */
     static final long BASE_DATE_EPOCH_SECONDS = 1_577_836_800L;
 
+    /**
+     * The longest domain an OWID can hold, in characters. RFC 1035 section
+     * 2.3.4, "Size limits", restricts the total length of a domain name to
+     * 255 octets or less, and that limit counts the wire format, which
+     * spends one length octet on every label and one zero octet on the
+     * root. An OWID stores the presentation form instead, being the text
+     * "example.com", where the dots stand in for the label length octets
+     * and the root has no text at all, so the same published limit is two
+     * characters shorter here.
+     */
+    static final int MAXIMUM_DOMAIN_LENGTH = 253;
+
     private Io() {
     }
 
@@ -93,17 +105,28 @@ final class Io {
         }
 
         /**
-         * Reads bytes until the null terminator and returns them as a string.
+         * Reads the domain, being the bytes up to the null terminator. The
+         * search stops at {@link Io#MAXIMUM_DOMAIN_LENGTH} rather than at
+         * the end of the buffer, so a buffer whose terminator is missing or
+         * corrupted costs no more than the published maximum however long
+         * that buffer is, and a domain longer than the maximum is refused
+         * without reading past it.
          */
         String readString() throws OwidException {
+            long lastTerminator = (long) position + MAXIMUM_DOMAIN_LENGTH;
+            int limit = (int) Math.min(buffer.length - 1L, lastTerminator);
             int terminator = -1;
-            for (int i = position; i < buffer.length; i++) {
+            for (int i = position; i <= limit; i++) {
                 if (buffer[i] == 0) {
                     terminator = i;
                     break;
                 }
             }
             if (terminator < 0) {
+                if (lastTerminator < buffer.length) {
+                    throw new OwidException("domain is longer than the '"
+                            + MAXIMUM_DOMAIN_LENGTH + "' character maximum");
+                }
                 throw endOfBuffer();
             }
             String value = new String(buffer, position, terminator - position,
