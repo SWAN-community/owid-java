@@ -20,7 +20,6 @@ import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
-import java.time.temporal.ChronoUnit;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.List;
@@ -30,8 +29,22 @@ import java.util.List;
  *
  * <p>An OWID records that the processor operating the domain handled the
  * payload, and any other OWIDs covered by the signature, at the date and time
- * given. Once signed it is immutable. Any change to the fields will cause
- * verification to fail.</p>
+ * given.</p>
+ *
+ * <p>An OWID is only worth anything because it is signed, so a caller cannot
+ * build one. An instance reaches calling code by one of two routes, being
+ * {@link #tryParse(String)} or {@link #tryParseBytes(byte[])} reading bytes
+ * that were already a complete OWID, or {@link Creator#createBytes(byte[])}
+ * and its companions signing one into existence. There is deliberately no way
+ * to assemble a half made one, because an unsigned OWID is indistinguishable
+ * from a signed one to the code downstream of it and the difference only
+ * surfaces later, when a verification fails somewhere nobody is watching.</p>
+ *
+ * <p>The state is read only for the same reason. The signature covers the
+ * fields as they arrived, so a caller changing one afterwards would hold
+ * something the signature no longer describes. The payload and signature are
+ * handed out as copies, because a Java byte array is mutable and a caller
+ * writing into one it was given would otherwise reach inside the OWID.</p>
  *
  * <p>The serialized form places the fields in this order. Multi byte integers
  * are little endian, except the version 1 date which is big endian.</p>
@@ -55,86 +68,74 @@ public final class Owid {
      */
     public static final int SIGNATURE_LENGTH = 64;
 
-    private Version version;
-    private String domain;
-    private Instant date;
-    private byte[] payload;
-    private byte[] signature;
+    private final Version version;
+    private final String domain;
+    private final Instant date;
+    private final byte[] payload;
+    private final byte[] signature;
 
     /**
-     * Creates an empty unsigned OWID with the current version, an empty
-     * domain, the current date truncated to the minute, an empty payload, and
-     * no signature.
-     */
-    public Owid() {
-        this.version = Version.current();
-        this.domain = "";
-        this.date = Instant.now().truncatedTo(ChronoUnit.MINUTES);
-        this.payload = new byte[0];
-        this.signature = new byte[0];
-    }
-
-    /**
-     * Creates a new unsigned OWID with the domain, date, and payload provided
-     * and the current version.
+     * Builds an instance from fields a reader or the creator has already
+     * settled.
      *
-     * @param domain  the domain associated with the creator
-     * @param date    the creation date, used to the minute
-     * @param payload the payload bytes
+     * <p>Package private, so only this library can call it. That is the whole
+     * construction boundary, because a consumer compiled against the library
+     * cannot name this constructor at all, so there is no way to obtain an
+     * OWID that has not either been read from a complete serialized one or
+     * been signed by a {@link Creator}. The arrays are taken as given because
+     * every caller inside the library hands over an array nothing else
+     * holds.</p>
      */
-    public Owid(String domain, Instant date, byte[] payload) {
-        this.version = Version.current();
+    Owid(Version version, String domain, Instant date, byte[] payload,
+            byte[] signature) {
+        this.version = version;
         this.domain = domain;
         this.date = date;
-        this.payload = payload.clone();
-        this.signature = new byte[0];
+        this.payload = payload;
+        this.signature = signature;
     }
 
     /**
-     * Creates an OWID from a base 64 encoded string. Decoding accepts the
-     * standard alphabet with or without the trailing padding.
+     * Reads a complete OWID from its base 64 form.
      *
-     * @param value the base 64 encoded OWID
-     * @return the parsed OWID
-     * @throws OwidException if the string is not valid base 64, or the bytes
-     *                       are not a valid OWID
-     */
-    public static Owid fromBase64(String value) throws OwidException {
-        return fromByteArray(decodeBase64(value));
-    }
-
-    /**
-     * Creates an OWID from its binary form.
+     * <p>The value may be anything at all, because this is external data and
+     * failing to be an OWID is an ordinary outcome rather than an error. The
+     * result reports whether it worked, the OWID only when it did, and a
+     * named reason either way. Decoding accepts the standard alphabet with or
+     * without the trailing padding, and ignores line breaks and spaces.</p>
      *
-     * @param buffer the serialized OWID bytes
-     * @return the parsed OWID
-     * @throws OwidException if the first byte is not a known version, the
-     *                       buffer is too short for the remaining fields, the
-     *                       domain is unterminated or longer than the maximum
-     *                       published for a domain name, or the declared
-     *                       payload length does not leave exactly the 64 byte
-     *                       signature at the end
+     * <p>A successful read says the bytes are a structurally valid OWID. It
+     * says nothing about whether the signature is genuine, which is a
+     * separate question answered by {@link #verifyDetailed(Crypto, List)}.</p>
+     *
+     * @param value the base 64 encoded OWID, which may be null
+     * @return the OWID and {@link OwidParseStatus#PARSED}, or no value and
+     *         the reason the string is not an OWID
      */
-    public static Owid fromByteArray(byte[] buffer) throws OwidException {
-        return fromReader(new Io.Reader(buffer));
-    }
-
-    /** Creates an OWID by reading the next fields from the reader. */
-    static Owid fromReader(Io.Reader reader) throws OwidException {
-        Version version = Version.fromByte(reader.readByte());
-        Owid owid = new Owid();
-        owid.version = version;
-        if (version == Version.EMPTY) {
-            owid.domain = "";
-            owid.payload = new byte[0];
-            owid.signature = new byte[0];
-            return owid;
+    public static OwidParseResult tryParse(String value) {
+        if (value == null || value.isEmpty()) {
+            return OwidParseResult.failed(OwidParseStatus.MISSING_INPUT);
         }
-        owid.domain = reader.readString();
-        owid.date = reader.readDate(version);
-        owid.payload = reader.readByteArray();
-        owid.signature = reader.readSignature();
-        return owid;
+        byte[] buffer = OwidReader.decodeBase64(value);
+        if (buffer == null) {
+            return OwidParseResult.failed(OwidParseStatus.INVALID_BASE64);
+        }
+        return OwidReader.read(buffer);
+    }
+
+    /**
+     * Reads a complete OWID from a buffer holding exactly one.
+     *
+     * <p>The buffer must be one whole OWID and nothing else. Bytes after the
+     * envelope are refused, because this library has no framed reader and so
+     * there is nothing else they could belong to.</p>
+     *
+     * @param buffer the serialized OWID bytes, which may be null
+     * @return the OWID and {@link OwidParseStatus#PARSED}, or no value and
+     *         the reason the bytes are not an OWID
+     */
+    public static OwidParseResult tryParseBytes(byte[] buffer) {
+        return OwidReader.read(buffer);
     }
 
     /**
@@ -163,7 +164,7 @@ public final class Owid {
 
     /** Appends the OWID, including the signature, to the buffer provided. */
     void toBuffer(ByteArrayOutputStream buffer) throws OwidException {
-        toBufferNoSignature(buffer);
+        writeNoSignature(buffer, version, domain, date, payload);
         Io.writeSignature(buffer, signature);
     }
 
@@ -181,7 +182,9 @@ public final class Owid {
      * Appends the fields other than the signature to the buffer. This is the
      * data over which the signature is calculated.
      */
-    void toBufferNoSignature(ByteArrayOutputStream buffer) throws OwidException {
+    private static void writeNoSignature(ByteArrayOutputStream buffer,
+            Version version, String domain, Instant date, byte[] payload)
+            throws OwidException {
         Io.writeByte(buffer, version.asByte());
         Io.writeString(buffer, domain);
         Io.writeDate(buffer, date, version);
@@ -194,23 +197,43 @@ public final class Owid {
      * form of each of the others in the order provided.
      */
     byte[] dataForCrypto(List<Owid> others) throws OwidException {
-        int length = byteCount(false);
+        return dataForCrypto(version, domain, date, payload, others);
+    }
+
+    /**
+     * The same bytes for fields that are not yet an OWID, which is what the
+     * creator holds at the moment it signs. Nothing partly built exists,
+     * because the creator keeps loose fields until it has a signature and
+     * then builds the finished OWID in one step.
+     */
+    static byte[] dataForCrypto(Version version, String domain, Instant date,
+            byte[] payload, List<Owid> others) throws OwidException {
+        int length = byteCount(version, domain, payload, null, false);
         for (Owid other : others) {
             length = addLength(length, other.byteCount(true));
         }
         ExactByteArrayOutputStream buffer =
                 new ExactByteArrayOutputStream(length);
-        toBufferNoSignature(buffer);
+        writeNoSignature(buffer, version, domain, date, payload);
         for (Owid other : others) {
             other.toBuffer(buffer);
         }
         return buffer.toExactByteArray();
     }
 
-    /**
-     * The exact number of bytes serialization will write.
-     */
+    /** The exact number of bytes serialization will write. */
     private int byteCount(boolean includeSignature) throws OwidException {
+        return byteCount(version, domain, payload, signature,
+                includeSignature);
+    }
+
+    /**
+     * The exact number of bytes serialization will write for the fields
+     * given. The signature may be null when it is not being counted.
+     */
+    private static int byteCount(Version version, String domain,
+            byte[] payload, byte[] signature, boolean includeSignature)
+            throws OwidException {
         int dateLength;
         switch (version) {
             case VERSION1:
@@ -246,7 +269,7 @@ public final class Owid {
      */
     private static int addLength(int left, int right) throws OwidException {
         if (right < 0 || left > Integer.MAX_VALUE - right) {
-            throw new OwidException(
+            throw new CapacityException(
                     "OWID byte length exceeds Java array capacity");
         }
         return left + right;
@@ -351,21 +374,88 @@ public final class Owid {
     }
 
     /**
+     * Asks whether the signature is genuine and reports why, keeping "does
+     * not match" apart from "could not check".
+     *
+     * <p>A key that cannot be used leaves the signature unjudged, and saying
+     * that it is invalid would report an outage as an attack, so the two
+     * arrive as different statuses.</p>
+     *
+     * @param crypto the crypto instance holding the public key, which may be
+     *               null when no key could be obtained
+     * @param others the other OWIDs that were signed together with this one,
+     *               in the same order as when signed
+     * @return the outcome of the check
+     */
+    public OwidVerificationResult verifyDetailed(Crypto crypto,
+            List<Owid> others) {
+        if (crypto == null || crypto.canVerify() == false) {
+            return OwidVerificationResult.of(
+                    OwidSignatureStatus.KEY_UNAVAILABLE);
+        }
+        if (signature.length != SIGNATURE_LENGTH) {
+            return OwidVerificationResult.of(
+                    OwidSignatureStatus.INVALID_SIGNATURE_LENGTH);
+        }
+        byte[] data;
+        try {
+            data = dataForCrypto(others);
+        } catch (CapacityException e) {
+            return OwidVerificationResult.of(
+                    OwidSignatureStatus.IMPLEMENTATION_CAPACITY_EXCEEDED);
+        } catch (OwidException e) {
+            return OwidVerificationResult.of(
+                    OwidSignatureStatus.VERIFICATION_ERROR);
+        }
+        boolean valid;
+        try {
+            valid = crypto.verifyByteArray(data, signature);
+        } catch (OwidException e) {
+            return OwidVerificationResult.of(
+                    OwidSignatureStatus.VERIFICATION_ERROR);
+        }
+        return OwidVerificationResult.of(valid
+                ? OwidSignatureStatus.SIGNATURE_VALID
+                : OwidSignatureStatus.SIGNATURE_INVALID);
+    }
+
+    /**
+     * The same question as {@link #verifyDetailed(Crypto, List)}, starting
+     * from the public key in SPKI PEM form.
+     *
+     * <p>Key material that cannot be decoded reports
+     * {@link OwidSignatureStatus#INVALID_KEY}, because the fault is in the
+     * key rather than in the identifier.</p>
+     *
+     * @param publicPem the public key in SPKI PEM form, which may be null
+     *                  when no key could be obtained
+     * @param others    the other OWIDs that were signed together with this
+     *                  one, in the same order as when signed
+     * @return the outcome of the check
+     */
+    public OwidVerificationResult verifyDetailedWithPublicKey(String publicPem,
+            List<Owid> others) {
+        if (publicPem == null || publicPem.trim().isEmpty()) {
+            return OwidVerificationResult.of(
+                    OwidSignatureStatus.KEY_UNAVAILABLE);
+        }
+        Crypto crypto;
+        try {
+            crypto = Crypto.newVerifyOnly(publicPem);
+        } catch (OwidException e) {
+            return OwidVerificationResult.of(
+                    OwidSignatureStatus.INVALID_KEY);
+        }
+        return verifyDetailed(crypto, others);
+    }
+
+    /**
      * Returns the byte version of the OWID.
      *
      * @return the version
      */
     public Version getVersion() {
         return version;
-    }
-
-    /**
-     * Sets the byte version of the OWID.
-     *
-     * @param version the version
-     */
-    public void setVersion(Version version) {
-        this.version = version;
     }
 
     /**
@@ -378,15 +468,6 @@ public final class Owid {
     }
 
     /**
-     * Sets the domain associated with the creator.
-     *
-     * @param domain the domain
-     */
-    public void setDomain(String domain) {
-        this.domain = domain;
-    }
-
-    /**
      * Returns the creation date and time, used to the nearest minute, in UTC.
      *
      * @return the date
@@ -396,17 +477,9 @@ public final class Owid {
     }
 
     /**
-     * Sets the creation date and time. The serialized form uses the minute
-     * truncated value.
-     *
-     * @param date the date
-     */
-    public void setDate(Instant date) {
-        this.date = date;
-    }
-
-    /**
-     * Returns a copy of the payload bytes.
+     * Returns a copy of the payload bytes, so that writing into the array
+     * returned cannot alter an OWID whose signature was calculated over the
+     * original bytes.
      *
      * @return the payload
      */
@@ -425,30 +498,13 @@ public final class Owid {
     }
 
     /**
-     * Sets the payload bytes.
-     *
-     * @param payload the payload
-     */
-    public void setPayload(byte[] payload) {
-        this.payload = payload.clone();
-    }
-
-    /**
-     * Returns a copy of the signature bytes.
+     * Returns a copy of the signature bytes, for the same reason as
+     * {@link #getPayload()}.
      *
      * @return the signature
      */
     public byte[] getSignature() {
         return signature.clone();
-    }
-
-    /**
-     * Sets the signature bytes.
-     *
-     * @param signature the signature
-     */
-    void setSignature(byte[] signature) {
-        this.signature = signature.clone();
     }
 
     /**
@@ -490,15 +546,5 @@ public final class Owid {
         result = 31 * result + Arrays.hashCode(payload);
         result = 31 * result + Arrays.hashCode(signature);
         return result;
-    }
-
-    /** Decodes base 64 accepting input with or without trailing padding. */
-    private static byte[] decodeBase64(String value) throws OwidException {
-        try {
-            return Base64.getMimeDecoder().decode(value);
-        } catch (IllegalArgumentException e) {
-            throw new OwidException("base 64 decoding failed because "
-                    + e.getMessage(), e);
-        }
     }
 }
