@@ -124,8 +124,7 @@ final class Io {
             }
             if (terminator < 0) {
                 if (lastTerminator < buffer.length) {
-                    throw new OwidException("domain is longer than the '"
-                            + MAXIMUM_DOMAIN_LENGTH + "' character maximum");
+                    throw domainTooLong();
                 }
                 throw endOfBuffer();
             }
@@ -202,11 +201,18 @@ final class Io {
 
     /**
      * Writes the string followed by the null terminator. The string must not
-     * contain a null character as that would conflict with the terminator.
+     * contain a null character as that would conflict with the terminator,
+     * and must be no longer than {@link #MAXIMUM_DOMAIN_LENGTH} bytes, being
+     * the bound the read applies, so the library cannot write a domain it
+     * would then refuse to read back. The count is of the UTF-8 bytes
+     * because those are what the read counts as it walks to the terminator.
      */
     static void writeString(ByteArrayOutputStream buffer, String value)
             throws OwidException {
         byte[] bytes = value.getBytes(StandardCharsets.UTF_8);
+        if (bytes.length > MAXIMUM_DOMAIN_LENGTH) {
+            throw domainTooLong();
+        }
         for (byte b : bytes) {
             if (b == 0) {
                 throw new OwidException("domain '" + value + "' is not valid");
@@ -273,6 +279,16 @@ final class Io {
                 throw new OwidException("OWID version '"
                         + (version.asByte() & 0xFF) + "' not supported");
         }
+    }
+
+    /**
+     * The refusal used by both halves of the library when a domain is longer
+     * than the published maximum, so the read and the write report the one
+     * condition in the same words.
+     */
+    static OwidException domainTooLong() {
+        return new OwidException("domain is longer than the '"
+                + MAXIMUM_DOMAIN_LENGTH + "' character maximum");
     }
 
     static OwidException invalidSignatureLength(int length) {

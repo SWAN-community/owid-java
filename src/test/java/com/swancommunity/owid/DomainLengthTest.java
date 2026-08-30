@@ -18,6 +18,7 @@ package com.swancommunity.owid;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -38,6 +39,13 @@ import org.junit.jupiter.api.Test;
  * that a domain at that maximum still parses, that a longer one is refused,
  * that a buffer with no terminator at all is refused, and that refusing a
  * hostile buffer costs no more than the maximum however long the buffer is.
+ *
+ * <p>The same maximum binds the write, because a library that can emit an
+ * OWID it cannot read leaves the fault to surface at the consumer rather
+ * than at the creator. The later tests prove a creator refuses a domain over
+ * the maximum when the caller supplies it, before the private key is used at
+ * all, and that serialising refuses a domain that arrived by any other
+ * route.</p>
  */
 class DomainLengthTest {
 
@@ -191,6 +199,102 @@ class DomainLengthTest {
         assertTrue(allocated < ALLOCATION_BOUND, "refusing a "
                 + HOSTILE_DOMAIN_LENGTH + " byte domain field allocated "
                 + allocated + " bytes");
+    }
+
+    /**
+     * A creator holding a domain of exactly the published maximum signs an
+     * OWID that serialises, parses back to the same domain, and verifies, so
+     * the write bound refuses nothing the library accepted before.
+     */
+    @Test
+    void maximumLengthDomainWritten() throws OwidException {
+        String domain = domainOfLength(MAXIMUM);
+        Crypto crypto = Crypto.generate();
+        Creator creator = Creator.create(domain, crypto);
+
+        Owid signed = creator.signBytes(PAYLOAD);
+        Owid parsed = Owid.fromByteArray(signed.asByteArray());
+
+        assertEquals(MAXIMUM, parsed.getDomain().length(),
+                "should write and read a domain of the published maximum");
+        assertEquals(domain, parsed.getDomain(),
+                "should round trip the domain the creator holds");
+        assertEquals(signed, parsed, "should parse to an equal OWID");
+        assertTrue(parsed.verifyWithCrypto(crypto, Collections.emptyList()),
+                "the parsed OWID should still verify");
+    }
+
+    /**
+     * A creator is refused one character over the maximum, at the point the
+     * caller supplies the domain, and the message names the maximum so the
+     * caller can see what the domain has to fit.
+     */
+    @Test
+    void overMaximumLengthDomainRefusedByCreator() throws OwidException {
+        Crypto crypto = Crypto.generate();
+
+        OwidException thrown = assertThrows(OwidException.class,
+                () -> Creator.create(domainOfLength(MAXIMUM + 1), crypto),
+                "should refuse a domain one character over the maximum");
+
+        assertNamesMaximum(thrown);
+    }
+
+    /**
+     * The refusal comes before anything is signed. A creator cannot be built
+     * with an over long domain even when the crypto instance holds no private
+     * key at all, and a domain that reaches an OWID by another route is
+     * refused as the bytes to sign are assembled, which is the step before
+     * the private key is used, leaving the OWID with no signature.
+     */
+    @Test
+    void overMaximumLengthDomainRefusedBeforeSigning() throws OwidException {
+        String domain = domainOfLength(MAXIMUM + 1);
+        Crypto verifyOnly =
+                Crypto.newVerifyOnly(Crypto.generate().publicKeyPem());
+        assertFalse(verifyOnly.canSign(),
+                "the crypto instance should not be able to sign");
+
+        OwidException fromCreator = assertThrows(OwidException.class,
+                () -> Creator.create(domain, verifyOnly),
+                "should refuse the domain without reaching the crypto");
+        assertNamesMaximum(fromCreator);
+
+        Owid owid = new Owid();
+        owid.setDomain(domain);
+        owid.setPayload(PAYLOAD);
+        OwidException fromData = assertThrows(OwidException.class,
+                () -> owid.dataForCrypto(Collections.emptyList()),
+                "should refuse to assemble the bytes that would be signed");
+        assertNamesMaximum(fromData);
+        assertEquals(0, owid.getSignature().length,
+                "nothing should have been signed");
+    }
+
+    /**
+     * Serialising refuses a domain over the maximum however it arrived. The
+     * OWID here carries a signature of the right length, so the refusal is
+     * the domain and not a missing signature.
+     */
+    @Test
+    void overMaximumLengthDomainRefusedWhenSerialising() {
+        Owid owid = new Owid();
+        owid.setDomain(domainOfLength(MAXIMUM + 1));
+        owid.setPayload(PAYLOAD);
+        owid.setSignature(SIGNATURE);
+
+        OwidException thrown = assertThrows(OwidException.class,
+                owid::asByteArray,
+                "should refuse to serialise a domain over the maximum");
+
+        assertNamesMaximum(thrown);
+    }
+
+    /** The refusal has to name the maximum the caller must fit within. */
+    private static void assertNamesMaximum(OwidException thrown) {
+        assertTrue(thrown.getMessage().contains(String.valueOf(MAXIMUM)),
+                "the message '" + thrown.getMessage()
+                        + "' should name the '" + MAXIMUM + "' maximum");
     }
 
     /**
