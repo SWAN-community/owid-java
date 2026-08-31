@@ -111,8 +111,8 @@ public final class OwidParseResult {
      * <p>This is what a caller reading one frame after another needs in order
      * to find the next one. {@link Owid#parse(java.nio.ByteBuffer)} moves the
      * buffer along by this much itself, so a caller using that surface does
-     * not have to. Reading a whole buffer this is the length of the buffer,
-     * because there the envelope is the whole of it.</p>
+     * not have to. On a successful whole buffer read this is the length of
+     * the buffer, because there the envelope is the whole of it.</p>
      *
      * <p>Three cases. The length of the envelope on success, one byte for
      * {@link OwidParseStatus#ABSENT_NODE} so that a caller steps over the

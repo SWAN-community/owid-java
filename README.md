@@ -36,16 +36,24 @@ creates, signs, serializes, and verifies OWIDs.
 
 The OWID wire format stores the payload length as an unsigned 32 bit value,
 so a payload from zero through 4,294,967,295 bytes is structurally valid. The
-format defines no smaller payload limit. The null-terminated domain has no
-separate encoded maximum, so the protocol alone is not an application input
-limit for the complete envelope.
+format defines no smaller payload limit. The null-terminated domain is capped
+at 253 characters, so that field is at most 254 bytes with its terminator,
+which leaves the payload as the only part of the envelope the protocol leaves
+open ended, so the protocol alone is not an application input limit for the
+complete envelope.
 
 This library validates that the declared payload length agrees with the bytes
 present before it sizes or copies the payload. A large declaration without
 the corresponding bytes is malformed, and is reported as
-`BYTE_COUNT_MISMATCH` without allocating the declared size. A matching large
+`BYTE_COUNT_MISMATCH` on the whole buffer read, or as `UNEXPECTED_END` on the
+framed read, without allocating the declared size either way. A matching large
 payload is not malformed merely because it is large, and parsing work and
 memory use scale with the bytes actually present.
+
+The 253 character maximum binds this library on both sides. A buffer whose
+domain field runs past it is refused when it is read, and a domain longer than
+it is refused when a `Creator` is built and again when the domain is written,
+so the library will not emit an OWID that it would then refuse to read.
 
 The in-memory APIs remain subject to Java's signed `int` array indexing,
 address-space and available-memory limits, so a single Java byte array cannot
@@ -158,8 +166,8 @@ thing whichever language read the bytes.
 | `INVALID_DOMAIN_ENCODING` | The domain is unterminated, or longer than the published maximum. |
 | `BYTE_COUNT_MISMATCH` | The declared payload count disagrees with the bytes present. Only the whole buffer read reports it. |
 | `IMPLEMENTATION_CAPACITY_EXCEEDED` | Larger than this runtime can hold. Not reachable from the byte array surface, because a Java array cannot exceed `Integer.MAX_VALUE` bytes and so can never agree with a larger declaration. |
-| `MALFORMED_ENVELOPE` | Malformed in a way none of the others describes. Reached by an absent node marker followed by bytes on the whole buffer read, where the marker has to be the whole of it. |
-| `ABSENT_NODE` | The bytes are the marker for an absent optional OWID. Not a fault and not an OWID, so no value is handed back. |
+| `MALFORMED_ENVELOPE` | Malformed in a way none of the others describes. Nothing reaches it, because the byte count rule already refuses everything it would catch, and it is kept as a backstop so a later change to that arithmetic cannot start accepting bytes after the signature in silence. |
+| `ABSENT_NODE` | The bytes are the marker for an absent optional OWID, on both reading contracts. Not a fault and not an OWID, so no value is handed back. |
 
 Reading and verifying are separate questions, and reading fetches no key and
 performs no cryptography. Bytes that are a well formed OWID read successfully
@@ -345,9 +353,10 @@ larger framed byte array. Reading it reports `ABSENT_NODE` and hands back no
 OWID, because the marker carries no signature and returning one would put an
 OWID in a caller's hands that nothing had ever signed. It is not a fault
 either, since version zero is supported and what it means is that a node is
-missing. Read as a frame the marker is consumed, so a caller steps over the
-absent node and reads the frame after it. Read as a whole buffer the marker
-has to be the whole of it, and bytes after it are `MALFORMED_ENVELOPE`.
+missing. The first byte settles this on both reading contracts, because
+nothing after it can turn the value into an OWID. Read as a frame the marker
+is also consumed, so a caller steps over the absent node and reads the frame
+after it.
 
 Base 64 decoding accepts the standard alphabet with or without the trailing
 padding, and skips line breaks and spaces. Anything else in the string is

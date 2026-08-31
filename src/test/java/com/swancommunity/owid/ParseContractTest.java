@@ -45,12 +45,14 @@ import org.junit.jupiter.api.Test;
  *
  * <p>Every member of {@link OwidParseStatus} is exercised here, with the
  * domain cases also covered in more depth by {@link DomainLengthTest} and the
- * byte count cases by {@link PayloadLengthTest}. Two members are not, and
+ * byte count cases by {@link PayloadLengthTest}. Three members are not, and
  * cannot be, being {@link OwidParseStatus#INVALID_INPUT_TYPE}, which the
- * compiler already refuses, and
+ * compiler already refuses,
  * {@link OwidParseStatus#IMPLEMENTATION_CAPACITY_EXCEEDED}, which a Java byte
- * array cannot reach on either surface. The reason is recorded on each of
- * those members as well.</p>
+ * array cannot reach on either surface, and
+ * {@link OwidParseStatus#MALFORMED_ENVELOPE}, which the byte count rule
+ * already makes unreachable and which is kept only as a backstop. The reason
+ * is recorded on each of those members as well.</p>
  */
 class ParseContractTest {
 
@@ -239,16 +241,17 @@ class ParseContractTest {
      * zero is supported and it means something, though, so the caller is told
      * that a node is absent rather than that the version is unknown.</p>
      *
-     * <p>Reading a whole buffer the marker has to be the whole of it, so
-     * bytes after it belong to no field.</p>
+     * <p>The first byte settles this on both reading contracts, because
+     * nothing after it can turn the value into an OWID, so a whole buffer
+     * beginning with the marker is an absent node whatever else it carries.
+     * That is the answer every OWID implementation gives.</p>
      */
     @Test
     void emptyMarkerIsAnAbsentNodeAndNotAnOwid() {
         ParseAssert.absentNode(Owid.parse(Owid.emptyByteArray()));
         ParseAssert.absentNode(Owid.parse("AA=="));
 
-        ParseAssert.failed(Owid.parse(new byte[] {0, 1}),
-                OwidParseStatus.MALFORMED_ENVELOPE);
+        ParseAssert.absentNode(Owid.parse(new byte[] {0, 1}));
     }
 
     /**

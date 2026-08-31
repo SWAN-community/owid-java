@@ -112,19 +112,15 @@ public enum OwidParseStatus {
      * fallback for the genuinely unclassified, not a substitute for naming a
      * failure that is already understood.
      *
-     * <p>One thing reaches it, being the marker for an absent node followed
-     * by bytes on the whole buffer contract, where the marker has to be the
-     * whole of the buffer and what follows belongs to no field.</p>
-     *
-     * <p>The other place that reports it is the check that an envelope ended
-     * where the input did, which the framed read does not apply at all and
-     * which cannot fire on the whole buffer read while the declared payload
-     * count has already been required to leave exactly the signature. That
-     * check is kept as a backstop rather than removed, because a future
-     * change to the count arithmetic would otherwise start accepting bytes
-     * after the signature in silence. Loosening the count rule during a
-     * deliberate check of the tests made it fire, so the backstop does
-     * work.</p>
+     * <p>Nothing produces one today, so no test can. The single place that
+     * reports it is the check that an envelope ended where the input did,
+     * which the framed read does not apply at all and which cannot fire on
+     * the whole buffer read while the declared payload count has already
+     * been required to leave exactly the signature. That check is kept as a
+     * backstop rather than removed, because a future change to the count
+     * arithmetic would otherwise start accepting bytes after the signature
+     * in silence. Loosening the count rule during a deliberate check of the
+     * tests made it fire, so the backstop does work.</p>
      */
     MALFORMED_ENVELOPE,
 
@@ -139,11 +135,11 @@ public enum OwidParseStatus {
      * date and no signature, and returning an OWID for it would put one in a
      * caller's hands that nothing had ever signed.</p>
      *
-     * <p>Reading one frame out of something longer, the marker is consumed,
-     * so a caller walking a run of frames can step over an absent node and
-     * read the one after it. Reading a whole buffer the marker has to be the
-     * whole of it, and bytes after it are
-     * {@link #MALFORMED_ENVELOPE}.</p>
+     * <p>The first byte settles this on both reading contracts, because
+     * nothing after it can turn the value into an OWID. Reading one frame
+     * out of something longer, the marker is consumed, so a caller walking a
+     * run of frames can step over an absent node and read the one after
+     * it.</p>
      */
     ABSENT_NODE
 }

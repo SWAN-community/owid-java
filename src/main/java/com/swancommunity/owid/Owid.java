@@ -254,12 +254,12 @@ public final class Owid {
      * <p>Reading it back reports {@link OwidParseStatus#ABSENT_NODE} and
      * hands back no value, because the marker stands for the absence of an
      * identifier rather than for one, and an OWID with no domain, no date and
-     * no signature would be one nothing had ever signed. Read as a frame,
-     * through {@link #parse(ByteBuffer)}, the marker is consumed, so a caller
-     * walking a run of frames steps over the absent node and reads the frame
-     * after it. Read as a whole buffer the marker has to be the whole of it,
-     * and bytes after it are
-     * {@link OwidParseStatus#MALFORMED_ENVELOPE}.</p>
+     * no signature would be one nothing had ever signed. The first byte
+     * settles that on both reading contracts, since nothing after it can
+     * turn the value into an OWID. Read as a frame, through
+     * {@link #parse(ByteBuffer)}, the marker is consumed, so a caller walking
+     * a run of frames steps over the absent node and reads the frame after
+     * it.</p>
      *
      * @return a single byte array holding the empty marker
      */

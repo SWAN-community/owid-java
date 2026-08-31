@@ -74,14 +74,12 @@ final class OwidReader {
             // means a node is missing, which is why the caller is told that
             // rather than told the version is unknown.
             //
-            // Reading a frame the marker is consumed, so a caller walking a
-            // run of frames steps over the absent node and reads the one
-            // after it. Reading a whole buffer the marker has to be the whole
-            // of it, and bytes after it belong to no field.
-            if (framed == false && from + 1 != total) {
-                return OwidParseResult.failed(
-                        OwidParseStatus.MALFORMED_ENVELOPE);
-            }
+            // The first byte settles this on both contracts, because nothing
+            // after it can turn the value into an OWID, so a whole buffer
+            // that begins with the marker is reported as an absent node
+            // whatever else it carries. Reading a frame the marker is also
+            // consumed, so a caller walking a run of frames steps over the
+            // absent node and reads the one after it.
             return OwidParseResult.absentNode(1);
         }
         if (version == null) {
