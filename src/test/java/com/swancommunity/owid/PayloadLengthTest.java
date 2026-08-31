@@ -23,6 +23,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.io.ByteArrayOutputStream;
 import java.lang.management.ManagementFactory;
 import java.lang.management.ThreadMXBean;
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.Collections;
@@ -219,6 +220,19 @@ class PayloadLengthTest {
             ParseAssert.failed(result, OwidParseStatus.BYTE_COUNT_MISMATCH);
             assertTrue(allocated < ALLOCATION_BOUND, "declared " + declared
                     + " allocated " + allocated + " bytes");
+
+            // The framed read is handed the same claim, since it sizes the
+            // payload from the declaration too and a sender picks the number
+            // there as well.
+            ByteBuffer framed = ByteBuffer.wrap(bytes);
+            before = allocatedBytes();
+            OwidParseResult framedResult = Owid.parse(framed);
+            allocated = allocatedBytes() - before;
+            ParseAssert.failed(framedResult, OwidParseStatus.UNEXPECTED_END);
+            assertTrue(allocated < ALLOCATION_BOUND, "framed declared "
+                    + declared + " allocated " + allocated + " bytes");
+            assertEquals(0, framed.position(),
+                    "a refused frame should consume nothing");
         }
     }
 

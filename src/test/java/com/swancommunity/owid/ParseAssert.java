@@ -46,6 +46,8 @@ final class ParseAssert {
                 "a successful read should report PARSED");
         assertNotNull(result.getValue(),
                 "a successful read should hand back the OWID");
+        assertTrue(result.getByteCount() > 0,
+                "a successful read should report the bytes it consumed");
         return result.getValue();
     }
 
@@ -61,5 +63,10 @@ final class ParseAssert {
                 "should report the reason the input is not an OWID");
         assertNull(result.getValue(),
                 "a failed read should hand back no OWID");
+        // The framed read moves the buffer on by this much, so a failure
+        // reporting anything other than nothing would leave a caller part way
+        // through a frame it could not reason about.
+        assertEquals(0, result.getByteCount(),
+                "a failed read should report consuming nothing");
     }
 }

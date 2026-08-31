@@ -39,19 +39,26 @@ public final class OwidParseResult {
 
     private final OwidParseStatus status;
 
-    private OwidParseResult(Owid value, OwidParseStatus status) {
+    private final int byteCount;
+
+    private OwidParseResult(Owid value, OwidParseStatus status,
+            int byteCount) {
         this.value = value;
         this.status = status;
+        this.byteCount = byteCount;
     }
 
-    /** The result of a read that produced the OWID given. */
-    static OwidParseResult parsed(Owid value) {
-        return new OwidParseResult(value, OwidParseStatus.PARSED);
+    /**
+     * The result of a read that produced the OWID given, occupying the number
+     * of bytes given.
+     */
+    static OwidParseResult parsed(Owid value, int byteCount) {
+        return new OwidParseResult(value, OwidParseStatus.PARSED, byteCount);
     }
 
     /** The result of a read that failed for the reason given. */
     static OwidParseResult failed(OwidParseStatus status) {
-        return new OwidParseResult(null, status);
+        return new OwidParseResult(null, status, 0);
     }
 
     /**
@@ -85,6 +92,23 @@ public final class OwidParseResult {
      */
     public OwidParseStatus getStatus() {
         return status;
+    }
+
+    /**
+     * How many bytes the envelope occupied, or zero when the read failed.
+     *
+     * <p>This is what a caller reading one frame after another needs in order
+     * to find the next one. {@link Owid#parse(java.nio.ByteBuffer)} moves the
+     * buffer along by this much itself, so a caller using that surface does
+     * not have to. Reading a whole buffer this is the length of the buffer,
+     * because there the envelope is the whole of it.</p>
+     *
+     * <p>Zero on failure, since a read that failed consumed nothing.</p>
+     *
+     * @return the length of the envelope in bytes, or zero
+     */
+    public int getByteCount() {
+        return byteCount;
     }
 
     /**

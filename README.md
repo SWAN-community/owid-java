@@ -135,9 +135,8 @@ party.verifyWithCrypto(crypto, Collections.<Owid>emptyList());   // false
 
 An OWID is read from whatever a caller was handed, which on a public end
 point means anything at all, so malformed data is an ordinary outcome rather
-than an exceptional one. `Owid.parse`, overloaded on the encoded string
-and on the raw bytes, therefore
-report three facts every time.
+than an exceptional one. `Owid.parse`, overloaded on the encoded string, the
+raw bytes and a `ByteBuffer`, therefore reports three facts every time.
 
 | Fact | Where |
 |------|-------|
@@ -182,13 +181,52 @@ as the outage it is.
 | `IMPLEMENTATION_CAPACITY_EXCEEDED` | More work than this runtime can hold, which needs an OWID and its chain to approach the two gigabyte limit of a Java array. |
 | `VERIFICATION_ERROR` | The check could not be completed for a reason that is not the identifier's fault. |
 
+## Reading one OWID out of something longer
+
+`Owid.parse(ByteBuffer)` is the framed read, for input that carries an OWID
+inside something longer, such as a tree of them or a record with other fields
+around it. It differs from the whole buffer read in one place. A whole buffer
+has to end where the envelope does, so a byte after the signature belongs to
+no field and is `BYTE_COUNT_MISMATCH`, whereas a frame only requires the
+declared payload and the signature to be present and says nothing about what
+follows, because what follows is the next frame rather than rubbish.
+
+```java
+ByteBuffer buffer = ByteBuffer.wrap(bytes);
+while (buffer.hasRemaining()) {
+    OwidParseResult result = Owid.parse(buffer);
+    if (result.isSuccess() == false) {
+        // buffer is still at the start of the frame that failed, and
+        // result.getStatus() says why.
+        break;
+    }
+    use(result.getValue());
+}
+```
+
+On success the buffer moves on to the first byte after the envelope, so
+calling `parse` again reads the next one, and `getByteCount()` on the result
+reports how far it moved. On failure the buffer is left exactly where it was
+and nothing is consumed, because a half read frame leaves a caller somewhere
+it cannot reason about, so what to do with a bad frame is the caller's to
+decide.
+
+`UNEXPECTED_END` from the framed read means the frame runs past the bytes
+supplied, so a caller reading from a source that is still arriving can wait
+for more and read again from the same position.
+
+Buffers that carry no array a caller may reach, being direct and read only
+ones, are read from a copy of what remains rather than in place. Callers
+wrapping an array, which is the ordinary case, are read without any copy.
+
 ## How an OWID comes into being
 
 An OWID is only worth anything because it is signed, so a caller cannot build
 one. There is no public constructor and no setter, and an instance reaches
 calling code by exactly two routes.
 
-1. A successful read of a complete serialized OWID, through `Owid.parse`.
+1. A successful read of a complete serialized OWID, through any `Owid.parse`
+   overload.
 2. A creator signing one into existence, through `createString` or
    `createBytes`.
 
@@ -230,8 +268,10 @@ domain, a null payload, or a field that cannot be serialized.
 
 - `Owid` holds the version, domain, date to the minute in UTC, payload bytes,
   and signature bytes, all read only.
-  - `Owid.parse` reads a signed OWID, from the encoded string or from the
-    raw bytes, and reports why rather than throwing.
+  - `Owid.parse` reads a signed OWID, from the encoded string, from the raw
+    bytes, or from a `ByteBuffer` holding one frame of something longer, and
+    reports why rather than throwing. `getByteCount` on the result says how
+    many bytes the envelope occupied.
   - `asBase64` and `asByteArray` serialize a signed OWID.
   - `payloadAsString` decodes the payload as UTF-8. `payloadAsPrintable`
     returns zero padded lower case hexadecimal with no separator.
@@ -292,11 +332,11 @@ OWID in the order provided when signing.
 
 An absent optional OWID is written as the single byte `0x00`, which
 `Owid.emptyByteArray` produces, and it marks the absence of a node inside a
-larger framed byte array. `Owid.parse` refuses it with
-`UNSUPPORTED_VERSION`, because a whole buffer holding nothing but the marker
-holds no OWID, and handing one back would put an OWID in a caller's hands
-that nothing had ever signed. Only a framed reader, which this library does
-not have, can make sense of the marker.
+larger framed byte array. Every `Owid.parse` overload refuses it with
+`UNSUPPORTED_VERSION`, the framed one included, because handing one back
+would put an OWID in a caller's hands that nothing had ever signed. A caller
+walking a stream that carries markers therefore has to skip them itself,
+there being no status in the shared vocabulary that means an absent node.
 
 Base 64 decoding accepts the standard alphabet with or without the trailing
 padding, and skips line breaks and spaces. Anything else in the string is
@@ -315,8 +355,8 @@ cross language signed fixtures including the chained case, confirm that a
 flipped signature byte fails verification, and cover the binary write
 helpers, the crypto, the creator, and the end point helpers. They also cover
 the parse contract, being every status the reading surfaces report together
-with a run of malformed buffers that must never throw, and the construction
-boundary, which is checked from a package outside the library because a check
+with a run of malformed buffers that must never throw, the framed read and
+what it consumes, and the construction boundary, which is checked from a package outside the library because a check
 made from inside it would measure nothing.
 
 ## License

@@ -24,6 +24,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.lang.reflect.Method;
+import java.nio.ByteBuffer;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.Collections;
@@ -38,16 +39,21 @@ import org.junit.jupiter.api.Test;
  * {@link ParseAssert} checks all three on every case here, so a test cannot
  * pass while the result contradicts itself.</p>
  *
+ * <p>These are the whole buffer surfaces, being the encoded string and the
+ * byte array. The framed surface, which reads one envelope out of something
+ * longer, is covered by {@link FramedReadTest}.</p>
+ *
  * <p>Every member of {@link OwidParseStatus} is exercised here, with the
  * domain cases also covered in more depth by {@link DomainLengthTest} and the
  * byte count cases by {@link PayloadLengthTest}. Two members are not, and
  * cannot be, being {@link OwidParseStatus#INVALID_INPUT_TYPE}, which the
  * compiler already refuses, and
  * {@link OwidParseStatus#IMPLEMENTATION_CAPACITY_EXCEEDED}, which a Java byte
- * array cannot reach. A third,
+ * array cannot reach on either surface. A third,
  * {@link OwidParseStatus#MALFORMED_ENVELOPE}, is a backstop with no path to
- * it while the byte count rule holds. The reason is recorded on each of those
- * members as well.</p>
+ * it while the byte count rule holds, and the framed surface does not apply
+ * that check at all. The reason is recorded on each of those members as
+ * well.</p>
  */
 class ParseContractTest {
 
@@ -289,13 +295,14 @@ class ParseContractTest {
             checked++;
             for (Class<?> parameter : method.getParameterTypes()) {
                 assertTrue(parameter == String.class
-                                || parameter == byte[].class,
+                                || parameter == byte[].class
+                                || parameter == ByteBuffer.class,
                         "reading should take only the data to read, but "
                                 + method.getName() + " takes "
                                 + parameter.getName());
             }
         }
-        assertEquals(2, checked, "should have checked both read surfaces");
+        assertEquals(3, checked, "should have checked every read surface");
     }
 
     /**

@@ -25,7 +25,10 @@ import com.swancommunity.owid.Crypto;
 import com.swancommunity.owid.Owid;
 import com.swancommunity.owid.OwidException;
 import com.swancommunity.owid.OwidParseResult;
+import java.nio.ByteBuffer;
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.List;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -74,6 +77,40 @@ class ReadmeExampleTest {
                     "the example should read back, but reported "
                             + result.getStatus());
         }
+    }
+
+    /**
+     * The framed loop from the README, reading two OWIDs written one after
+     * the other into the same array.
+     */
+    @Test
+    void readingOneOwidAfterAnother() throws OwidException {
+        Crypto crypto = Crypto.generate();
+        Creator creator = Creator.create("example.com", crypto);
+        byte[] one = creator.createString("one").asByteArray();
+        byte[] two = creator.createString("two").asByteArray();
+        byte[] bytes = new byte[one.length + two.length];
+        System.arraycopy(one, 0, bytes, 0, one.length);
+        System.arraycopy(two, 0, bytes, one.length, two.length);
+
+        List<String> payloads = new ArrayList<String>();
+
+        ByteBuffer buffer = ByteBuffer.wrap(bytes);
+        while (buffer.hasRemaining()) {
+            OwidParseResult result = Owid.parse(buffer);
+            if (result.isSuccess() == false) {
+                // buffer is still at the start of the frame that failed, and
+                // result.getStatus() says why.
+                break;
+            }
+            payloads.add(result.getValue().payloadAsString());
+        }
+
+        assertEquals(2, payloads.size(), "should have read both OWIDs");
+        assertEquals("one", payloads.get(0), "should read the first payload");
+        assertEquals("two", payloads.get(1), "should read the second payload");
+        assertFalse(buffer.hasRemaining(),
+                "the two OWIDs should account for every byte");
     }
 
     @Test

@@ -60,6 +60,11 @@ public enum OwidParseStatus {
      * The data stopped in the middle of a field. Different from
      * {@link #BYTE_COUNT_MISMATCH}, which is a declaration disagreeing with
      * data that is all present.
+     *
+     * <p>Reading one frame out of something longer, this also covers a frame
+     * whose declared payload and signature run past the bytes supplied, so a
+     * caller reading from a source that is still arriving can wait for more
+     * and read again from the same place.</p>
      */
     UNEXPECTED_END,
 
@@ -74,16 +79,26 @@ public enum OwidParseStatus {
      * present. Checked before anything is sized by the declaration, so a
      * sender cannot make a reader allocate by claiming a large payload it
      * did not send.
+     *
+     * <p>Only the whole buffer read reports this, because only there does the
+     * envelope have to end where the input does. Reading one frame out of
+     * something longer, bytes after the signature are the next frame rather
+     * than a disagreement, and a frame that runs past the input is
+     * {@link #UNEXPECTED_END}.</p>
      */
     BYTE_COUNT_MISMATCH,
 
     /**
      * The envelope is structurally consistent but larger than this runtime
      * can hold. Deliberately apart from the data being wrong, because the
-     * same bytes may be readable elsewhere. A Java byte array cannot hold
-     * more than {@link Integer#MAX_VALUE} bytes, so a declaration larger
-     * than that can never agree with the bytes present and this status is
-     * not reachable from the byte array surface.
+     * same bytes may be readable elsewhere.
+     *
+     * <p>Not reachable in Java, and so not covered by a test. A Java byte
+     * array cannot hold more than {@link Integer#MAX_VALUE} bytes, so a
+     * declaration larger than that can neither equal the bytes present, which
+     * is what the whole buffer read requires, nor be covered by them, which
+     * is what the framed read requires. The guard is kept so a future change
+     * to that arithmetic cannot silently truncate the declaration.</p>
      */
     IMPLEMENTATION_CAPACITY_EXCEEDED,
 
@@ -92,16 +107,17 @@ public enum OwidParseStatus {
      * fallback for the genuinely unclassified, not a substitute for naming a
      * failure that is already understood.
      *
-     * <p>Not reachable in Java today, and so not covered by a test. Every
-     * failure this reader can meet is classified by one of the members above,
-     * and the one place that still reports this is the check that the
-     * envelope ended where the buffer did, which cannot fire while the
-     * declared payload count has already been required to leave exactly the
-     * signature. That check is kept as a backstop rather than removed,
-     * because a future change to the count arithmetic would otherwise start
-     * accepting bytes after the signature in silence. Loosening the count
-     * rule during a deliberate check of the tests made this status appear, so
-     * the backstop does work.</p>
+     * <p>Not reachable in Java today, on either reading surface, and so not
+     * covered by a test. Every failure these readers can meet is classified
+     * by one of the members above. The one place that still reports this is
+     * the check that the envelope ended where the input did, which the framed
+     * read does not apply at all and which cannot fire on the whole buffer
+     * read while the declared payload count has already been required to
+     * leave exactly the signature. That check is kept as a backstop rather
+     * than removed, because a future change to the count arithmetic would
+     * otherwise start accepting bytes after the signature in silence.
+     * Loosening the count rule during a deliberate check of the tests made
+     * this status appear, so the backstop does work.</p>
      */
     MALFORMED_ENVELOPE
 }

@@ -35,26 +35,36 @@ import java.time.Instant;
  * would still be built and unwound, so the cost would remain and only the
  * surface would look different.</p>
  *
- * <p>This is the exact buffer contract, meaning the envelope has to end
- * where the buffer does. The library has no framed reader, so there is
- * nothing that later bytes could belong to.</p>
+ * <p>The same walk serves both reading contracts, which differ in one place
+ * only. A whole buffer holds one envelope and nothing else, so the declared
+ * payload has to leave exactly the signature at the end and a byte after it
+ * belongs to no field. A frame is one envelope inside something longer, so
+ * the declared payload and the signature only have to be present, and what
+ * follows is the next frame rather than rubbish.</p>
  */
 final class OwidReader {
 
     private OwidReader() {
     }
 
-    /** Reads one complete OWID occupying the whole of the buffer. */
-    static OwidParseResult read(byte[] buffer) {
+    /**
+     * Reads one OWID from the region of the buffer between the two offsets.
+     *
+     * @param framed false when the region holds one envelope and nothing
+     *               else, so the envelope has to end where the region does,
+     *               and true when the envelope is one frame inside something
+     *               longer and whatever follows is the next frame
+     */
+    static OwidParseResult read(byte[] buffer, int from, int total,
+            boolean framed) {
         // Nothing supplied is not the same as data that stopped part way
-        // through a field, so a buffer with no bytes in it is reported as the
+        // through a field, so a region with no bytes in it is reported as the
         // absence it is rather than as a truncation.
-        if (buffer == null || buffer.length == 0) {
+        if (buffer == null || total - from <= 0) {
             return OwidParseResult.failed(OwidParseStatus.MISSING_INPUT);
         }
 
-        int total = buffer.length;
-        Version version = Version.forByte(buffer[0] & 0xFF);
+        Version version = Version.forByte(buffer[from] & 0xFF);
         if (version == null || version == Version.EMPTY) {
             // The empty marker, being the single byte zero, is refused here
             // along with the versions this implementation does not know. It
@@ -63,12 +73,14 @@ final class OwidReader {
             // no signature, and handing one back would put an OWID in a
             // caller's hands that nothing had ever signed. That is the state
             // the construction boundary exists to prevent, and it could never
-            // verify. A framed reader, which this library does not have,
-            // would still read the marker as the absence it means.
+            // verify. The framed read refuses it for the same reason, so a
+            // caller walking a stream that carries markers has to skip them
+            // itself, there being no status in the shared vocabulary that
+            // means an absent node.
             return OwidParseResult.failed(
                     OwidParseStatus.UNSUPPORTED_VERSION);
         }
-        int at = 1;
+        int at = from + 1;
 
         // The domain, terminated by a zero byte and no longer than the
         // maximum published for a domain name. The walk stops at that
@@ -135,14 +147,25 @@ final class OwidReader {
         // rather than wrapping, and a negative count can never equal a
         // declaration.
         //
-        // The disagreement is the finding even when the buffer also stopped
-        // early. What a reader can say for certain is that the declared
-        // payload cannot leave exactly the signature the version requires,
-        // and that is true whichever way the bytes fall short. Reporting it
-        // as a truncation instead would name a different fault for the same
-        // evidence.
+        // Reading a whole buffer, the disagreement is the finding even when
+        // the buffer also stopped early. What a reader can say for certain is
+        // that the declared payload cannot leave exactly the signature the
+        // version requires, and that is true whichever way the bytes fall
+        // short. Reporting it as a truncation instead would name a different
+        // fault for the same evidence.
+        //
+        // Reading a frame, only a shortfall is a finding, since a longer
+        // input is the next frame rather than a disagreement. A frame that
+        // runs past what is here is reported as a truncation, because a
+        // caller walking a stream needs to know whether to wait for more
+        // bytes or to give up on these, and those are different answers.
         long present = (long) (total - at) - Owid.SIGNATURE_LENGTH;
-        if (present != declared) {
+        if (framed) {
+            if (present < declared) {
+                return OwidParseResult.failed(
+                        OwidParseStatus.UNEXPECTED_END);
+            }
+        } else if (present != declared) {
             return OwidParseResult.failed(
                     OwidParseStatus.BYTE_COUNT_MISMATCH);
         }
@@ -150,10 +173,10 @@ final class OwidReader {
         // The bytes are all here. Whether this runtime can hold them in one
         // array is a separate question with a different answer, because the
         // same envelope may be readable elsewhere. A Java byte array cannot
-        // exceed Integer.MAX_VALUE, so the count above can never agree with
-        // a larger declaration and this cannot fire today. It is kept so a
-        // future change to that arithmetic cannot silently truncate the cast
-        // below.
+        // exceed Integer.MAX_VALUE, so neither contract above can be
+        // satisfied by a larger declaration and this cannot fire today. It is
+        // kept so a future change to that arithmetic cannot silently truncate
+        // the cast below.
         if (declared > Integer.MAX_VALUE) {
             return OwidParseResult.failed(
                     OwidParseStatus.IMPLEMENTATION_CAPACITY_EXCEEDED);
@@ -168,16 +191,18 @@ final class OwidReader {
         System.arraycopy(buffer, at, signature, 0, Owid.SIGNATURE_LENGTH);
         at += Owid.SIGNATURE_LENGTH;
 
-        if (at != total) {
+        if (framed == false && at != total) {
             // Unreachable while the count check above holds, and kept so
             // that a future change to that arithmetic cannot silently start
-            // accepting bytes after the signature.
+            // accepting bytes after the signature. A frame says nothing about
+            // what follows it, so the check does not apply there.
             return OwidParseResult.failed(
                     OwidParseStatus.MALFORMED_ENVELOPE);
         }
 
         return OwidParseResult.parsed(
-                new Owid(version, domain, date, payload, signature));
+                new Owid(version, domain, date, payload, signature),
+                at - from);
     }
 
     /**

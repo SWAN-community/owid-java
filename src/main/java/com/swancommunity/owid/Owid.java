@@ -17,6 +17,8 @@
 package com.swancommunity.owid;
 
 import java.io.ByteArrayOutputStream;
+import java.nio.Buffer;
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
@@ -33,8 +35,9 @@ import java.util.List;
  *
  * <p>An OWID is only worth anything because it is signed, so a caller cannot
  * build one. An instance reaches calling code by one of two routes, being
- * {@link #parse(String)} or {@link #parse(byte[])} reading bytes that were
- * already a complete OWID, or {@link Creator#createBytes(byte[])}
+ * {@link #parse(String)}, {@link #parse(byte[])} or
+ * {@link #parse(ByteBuffer)} reading bytes that were already a complete
+ * OWID, or {@link Creator#createBytes(byte[])}
  * and its companions signing one into existence. There is deliberately no way
  * to assemble a half made one, because an unsigned OWID is indistinguishable
  * from a signed one to the code downstream of it and the difference only
@@ -120,22 +123,101 @@ public final class Owid {
         if (buffer == null) {
             return OwidParseResult.failed(OwidParseStatus.INVALID_BASE64);
         }
-        return OwidReader.read(buffer);
+        return OwidReader.read(buffer, 0, buffer.length, false);
     }
 
     /**
      * Reads a complete OWID from a buffer holding exactly one.
      *
-     * <p>The buffer must be one whole OWID and nothing else. Bytes after the
-     * envelope are refused, because this library has no framed reader and so
-     * there is nothing else they could belong to.</p>
+     * <p>The buffer must be one whole OWID and nothing else, so bytes after
+     * the envelope are refused as {@link OwidParseStatus#BYTE_COUNT_MISMATCH}
+     * because on this surface there is nothing else they could belong to. To
+     * read one envelope out of something longer, and leave what follows for
+     * the next read, use {@link #parse(ByteBuffer)}.</p>
      *
      * @param buffer the serialized OWID bytes, which may be null
      * @return the OWID and {@link OwidParseStatus#PARSED}, or no value and
      *         the reason the bytes are not an OWID
      */
     public static OwidParseResult parse(byte[] buffer) {
-        return OwidReader.read(buffer);
+        if (buffer == null) {
+            return OwidParseResult.failed(OwidParseStatus.MISSING_INPUT);
+        }
+        return OwidReader.read(buffer, 0, buffer.length, false);
+    }
+
+    /**
+     * Reads one OWID from where the buffer is positioned, leaving whatever
+     * follows for the next read.
+     *
+     * <p>This is the framed read, for input that carries an OWID inside
+     * something longer, such as a tree of them or a record with other fields
+     * around it. It differs from {@link #parse(byte[])} in one place only.
+     * A whole buffer has to end where the envelope does, so a byte after the
+     * signature belongs to no field, whereas here the declared payload and
+     * the signature only have to be present and what follows is the next
+     * frame rather than rubbish.</p>
+     *
+     * <p>On success the buffer is moved on to the first byte after the
+     * envelope, so calling this again reads the next one, and
+     * {@link OwidParseResult#getByteCount()} reports how far it moved. On
+     * failure the buffer is left exactly where it was and nothing is
+     * consumed, because a half read frame leaves a caller somewhere it cannot
+     * reason about, so what to do with a bad frame is the caller's to
+     * decide.</p>
+     *
+     * <pre>
+     * ByteBuffer buffer = ByteBuffer.wrap(bytes);
+     * while (buffer.hasRemaining()) {
+     *     OwidParseResult result = Owid.parse(buffer);
+     *     if (result.isSuccess() == false) {
+     *         break;
+     *     }
+     *     use(result.getValue());
+     * }
+     * </pre>
+     *
+     * <p>{@link OwidParseStatus#UNEXPECTED_END} here means the frame runs
+     * past the bytes supplied, so a caller reading from a growing source can
+     * wait for more and read again from the same position.</p>
+     *
+     * @param buffer the bytes to read from, which may be null
+     * @return the OWID and {@link OwidParseStatus#PARSED}, or no value and
+     *         the reason the bytes are not an OWID
+     */
+    public static OwidParseResult parse(ByteBuffer buffer) {
+        if (buffer == null || buffer.hasRemaining() == false) {
+            return OwidParseResult.failed(OwidParseStatus.MISSING_INPUT);
+        }
+        OwidParseResult result;
+        if (buffer.hasArray()) {
+            int base = buffer.arrayOffset();
+            result = OwidReader.read(buffer.array(),
+                    base + buffer.position(), base + buffer.limit(), true);
+        } else {
+            // A direct or read only buffer has no array to walk, so the bytes
+            // are taken a copy of. Ordinary callers wrap an array and never
+            // reach this, and the copy is of what remains rather than of the
+            // envelope, because how long the envelope is cannot be known
+            // until it has been read.
+            byte[] remaining = new byte[buffer.remaining()];
+            ByteBuffer view = buffer.duplicate();
+            view.get(remaining);
+            result = OwidReader.read(remaining, 0, remaining.length, true);
+        }
+        if (result.isSuccess()) {
+            // Only a successful read moves the buffer on. A failed read
+            // reports consuming nothing, so the arithmetic alone would leave
+            // the buffer where it was, and this says so outright rather than
+            // resting on that.
+            //
+            // Buffer.position is called rather than ByteBuffer.position
+            // because the covariant override arrived in Java 9 and this
+            // library is built for 8.
+            ((Buffer) buffer).position(
+                    buffer.position() + result.getByteCount());
+        }
+        return result;
     }
 
     /**
@@ -172,11 +254,13 @@ public final class Owid {
      * Writes the marker for an absent optional OWID, being the single byte
      * zero, for embedding in a larger framed byte array.
      *
-     * <p>Reading it back through {@link #parse(byte[])} reports
+     * <p>Every reading surface here, framed included, refuses it as
      * {@link OwidParseStatus#UNSUPPORTED_VERSION}, because the marker stands
-     * for the absence of an identifier rather than for one, and a whole
-     * buffer holding nothing but the marker holds no OWID. Only a framed
-     * reader, which this library does not have, can make sense of it.</p>
+     * for the absence of an identifier rather than for one, and handing back
+     * an OWID with no domain, no date and no signature would put one in a
+     * caller's hands that nothing had ever signed. A caller walking a stream
+     * that carries markers therefore has to skip them itself, there being no
+     * status in the shared vocabulary that means an absent node.</p>
      *
      * @return a single byte array holding the empty marker
      */
