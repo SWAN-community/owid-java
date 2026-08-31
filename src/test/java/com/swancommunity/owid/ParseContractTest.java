@@ -49,11 +49,8 @@ import org.junit.jupiter.api.Test;
  * cannot be, being {@link OwidParseStatus#INVALID_INPUT_TYPE}, which the
  * compiler already refuses, and
  * {@link OwidParseStatus#IMPLEMENTATION_CAPACITY_EXCEEDED}, which a Java byte
- * array cannot reach on either surface. A third,
- * {@link OwidParseStatus#MALFORMED_ENVELOPE}, is a backstop with no path to
- * it while the byte count rule holds, and the framed surface does not apply
- * that check at all. The reason is recorded on each of those members as
- * well.</p>
+ * array cannot reach on either surface. The reason is recorded on each of
+ * those members as well.</p>
  */
 class ParseContractTest {
 
@@ -233,22 +230,25 @@ class ParseContractTest {
     }
 
     /**
-     * The marker for an absent optional OWID is refused by the whole buffer
-     * read.
+     * The marker for an absent optional OWID hands back no OWID, which is the
+     * thing that matters, and says what it is rather than calling it a fault.
      *
-     * <p>It stands for the absence of an identifier rather than for one, and
-     * it carries no domain, no date and no signature, so handing one back
-     * would put an OWID in a caller's hands that nothing had ever signed.
-     * That is the state the construction boundary exists to prevent, and it
-     * could never verify. A framed reader, which this library does not have,
-     * would still read the marker as the absence it means.</p>
+     * <p>It carries no domain, no date and no signature, so handing one back
+     * would put an OWID in a caller's hands that nothing had ever signed,
+     * which is the state the construction boundary exists to prevent. Version
+     * zero is supported and it means something, though, so the caller is told
+     * that a node is absent rather than that the version is unknown.</p>
+     *
+     * <p>Reading a whole buffer the marker has to be the whole of it, so
+     * bytes after it belong to no field.</p>
      */
     @Test
-    void emptyMarkerIsRefused() {
-        ParseAssert.failed(Owid.parse(Owid.emptyByteArray()),
-                OwidParseStatus.UNSUPPORTED_VERSION);
+    void emptyMarkerIsAnAbsentNodeAndNotAnOwid() {
+        ParseAssert.absentNode(Owid.parse(Owid.emptyByteArray()));
+        ParseAssert.absentNode(Owid.parse("AA=="));
+
         ParseAssert.failed(Owid.parse(new byte[] {0, 1}),
-                OwidParseStatus.UNSUPPORTED_VERSION);
+                OwidParseStatus.MALFORMED_ENVELOPE);
     }
 
     /**

@@ -153,12 +153,13 @@ thing whichever language read the bytes.
 | `MISSING_INPUT` | Nothing was supplied to read. |
 | `INVALID_INPUT_TYPE` | Not reachable in Java, where the compiler already refuses anything that is not a string or a byte array. |
 | `INVALID_BASE64` | The string is not base 64, so there are no bytes to read. |
-| `UNSUPPORTED_VERSION` | The first byte names a version this library does not know. |
-| `UNEXPECTED_END` | The data stopped in the middle of a field. |
+| `UNSUPPORTED_VERSION` | The first byte names a version this library does not know. Version zero is known, and is `ABSENT_NODE` below. |
+| `UNEXPECTED_END` | The data stopped in the middle of a field. Reading a frame, this also covers a frame running past the bytes supplied. |
 | `INVALID_DOMAIN_ENCODING` | The domain is unterminated, or longer than the published maximum. |
-| `BYTE_COUNT_MISMATCH` | The declared payload count disagrees with the bytes present. |
+| `BYTE_COUNT_MISMATCH` | The declared payload count disagrees with the bytes present. Only the whole buffer read reports it. |
 | `IMPLEMENTATION_CAPACITY_EXCEEDED` | Larger than this runtime can hold. Not reachable from the byte array surface, because a Java array cannot exceed `Integer.MAX_VALUE` bytes and so can never agree with a larger declaration. |
-| `MALFORMED_ENVELOPE` | Malformed in a way none of the others describes. Every failure this reader can meet is classified by one of the rows above, so this is a backstop with no path to it while the byte count rule holds. |
+| `MALFORMED_ENVELOPE` | Malformed in a way none of the others describes. Reached by an absent node marker followed by bytes on the whole buffer read, where the marker has to be the whole of it. |
+| `ABSENT_NODE` | The bytes are the marker for an absent optional OWID. Not a fault and not an OWID, so no value is handed back. |
 
 Reading and verifying are separate questions, and reading fetches no key and
 performs no cryptography. Bytes that are a well formed OWID read successfully
@@ -213,7 +214,15 @@ decide.
 
 `UNEXPECTED_END` from the framed read means the frame runs past the bytes
 supplied, so a caller reading from a source that is still arriving can wait
-for more and read again from the same position.
+for more and read again from the same position. That is the settled rule
+across every implementation rather than a choice this one made, because
+knowing whether to wait for more bytes or to give up on these is what a
+caller of a framed read most needs to be told.
+
+An absent node marker in the middle of a run of frames reports `ABSENT_NODE`
+and consumes its single byte, so the loop above steps over it and reads the
+frame after it. It hands back no OWID, because the marker carries no
+signature.
 
 Buffers that carry no array a caller may reach, being direct and read only
 ones, are read from a copy of what remains rather than in place. Callers
@@ -253,7 +262,7 @@ copies, because a Java byte array is mutable.
 | `creator.signBytes(value)` | `creator.createBytes(value)` |
 | `new Owid()`, then `creator.signWithOthers(owid, others)` | `creator.createBytes(payload, others)` |
 | `owid.setVersion`, `setDomain`, `setDate`, `setPayload` | no replacement, the state is read only |
-| `Version.fromByte(b)` | no replacement, an unknown version byte is `UNSUPPORTED_VERSION` from a read |
+| `Version.fromByte(b)` | no replacement, an unknown version byte is `UNSUPPORTED_VERSION` from a read, and version zero is `ABSENT_NODE` |
 
 `Owid.parse` is overloaded on the input type, so a caller passing a literal
 `null` has to say which one it means, as in `Owid.parse((String) null)`. The
@@ -332,11 +341,13 @@ OWID in the order provided when signing.
 
 An absent optional OWID is written as the single byte `0x00`, which
 `Owid.emptyByteArray` produces, and it marks the absence of a node inside a
-larger framed byte array. Every `Owid.parse` overload refuses it with
-`UNSUPPORTED_VERSION`, the framed one included, because handing one back
-would put an OWID in a caller's hands that nothing had ever signed. A caller
-walking a stream that carries markers therefore has to skip them itself,
-there being no status in the shared vocabulary that means an absent node.
+larger framed byte array. Reading it reports `ABSENT_NODE` and hands back no
+OWID, because the marker carries no signature and returning one would put an
+OWID in a caller's hands that nothing had ever signed. It is not a fault
+either, since version zero is supported and what it means is that a node is
+missing. Read as a frame the marker is consumed, so a caller steps over the
+absent node and reads the frame after it. Read as a whole buffer the marker
+has to be the whole of it, and bytes after it are `MALFORMED_ENVELOPE`.
 
 Base 64 decoding accepts the standard alphabet with or without the trailing
 padding, and skips line breaks and spaces. Anything else in the string is

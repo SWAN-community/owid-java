@@ -65,18 +65,29 @@ final class OwidReader {
         }
 
         Version version = Version.forByte(buffer[from] & 0xFF);
-        if (version == null || version == Version.EMPTY) {
-            // The empty marker, being the single byte zero, is refused here
-            // along with the versions this implementation does not know. It
-            // stands for an absent node inside a framed stream rather than
-            // for an identifier, so what it carries is no domain, no date and
-            // no signature, and handing one back would put an OWID in a
-            // caller's hands that nothing had ever signed. That is the state
-            // the construction boundary exists to prevent, and it could never
-            // verify. The framed read refuses it for the same reason, so a
-            // caller walking a stream that carries markers has to skip them
-            // itself, there being no status in the shared vocabulary that
-            // means an absent node.
+        if (version == Version.EMPTY) {
+            // The marker for an absent node, being the single byte zero. It
+            // is not an OWID and no value is handed back, because it carries
+            // no domain, no date and no signature and returning one would put
+            // an OWID in a caller's hands that nothing had ever signed. It is
+            // not a fault either, since version zero is supported and it
+            // means a node is missing, which is why the caller is told that
+            // rather than told the version is unknown.
+            //
+            // Reading a frame the marker is consumed, so a caller walking a
+            // run of frames steps over the absent node and reads the one
+            // after it. Reading a whole buffer the marker has to be the whole
+            // of it, and bytes after it belong to no field.
+            if (framed == false && from + 1 != total) {
+                return OwidParseResult.failed(
+                        OwidParseStatus.MALFORMED_ENVELOPE);
+            }
+            return OwidParseResult.absentNode(1);
+        }
+        if (version == null) {
+            // A version byte this implementation does not know, which is a
+            // different thing from the marker above, where the version is
+            // known and says a node is missing.
             return OwidParseResult.failed(
                     OwidParseStatus.UNSUPPORTED_VERSION);
         }

@@ -30,10 +30,11 @@ public enum Version {
      * Marker used to indicate an optional OWID that is not present, inside a
      * larger framed byte array.
      *
-     * <p>No OWID carries this version. A whole buffer holding nothing but the
-     * marker holds no identifier, so {@link Owid#parse(byte[])} refuses it as
-     * {@link OwidParseStatus#UNSUPPORTED_VERSION} rather than handing back
-     * something nothing has ever signed.</p>
+     * <p>No OWID carries this version, so reading the marker hands back no
+     * value and reports {@link OwidParseStatus#ABSENT_NODE}, being the
+     * absence of a node rather than a fault. Reading one frame out of
+     * something longer the marker is consumed, so a caller steps over the
+     * absent node and reads the frame after it.</p>
      */
     EMPTY(0),
 

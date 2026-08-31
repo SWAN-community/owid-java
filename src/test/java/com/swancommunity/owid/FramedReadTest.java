@@ -198,10 +198,48 @@ class FramedReadTest {
                                 new byte[0], Envelope.signature()))),
                 OwidParseStatus.UNEXPECTED_END);
 
-        // The marker for an absent node is refused here too, because handing
-        // one back would be an OWID nothing had ever signed.
-        ParseAssert.failed(Owid.parse(ByteBuffer.wrap(Owid.emptyByteArray())),
-                OwidParseStatus.UNSUPPORTED_VERSION);
+    }
+
+    /**
+     * The marker for an absent node hands back no OWID, says so in its own
+     * words, and takes the one byte it is, so a caller walking a run of
+     * frames can step over a node that is deliberately not there.
+     */
+    @Test
+    void anAbsentNodeIsSteppedOverAndTheNextFrameRead() {
+        ByteArrayOutputStream stream = new ByteArrayOutputStream();
+        byte[] marker = Owid.emptyByteArray();
+        stream.write(marker, 0, marker.length);
+        stream.write(FIRST, 0, FIRST.length);
+        ByteBuffer buffer = ByteBuffer.wrap(stream.toByteArray());
+
+        ParseAssert.absentNode(Owid.parse(buffer));
+        assertEquals(marker.length, buffer.position(),
+                "should have stepped over the marker and nothing more");
+
+        Owid owid = ParseAssert.parsed(Owid.parse(buffer));
+
+        assertEquals("first.example", owid.getDomain(),
+                "should read the frame that follows the absent node");
+        assertFalse(buffer.hasRemaining(),
+                "the marker and the frame should account for every byte");
+    }
+
+    /**
+     * A marker on its own, and a run of them, read as absent nodes rather
+     * than as anything wrong.
+     */
+    @Test
+    void aRunOfAbsentNodesReadsOneAtATime() {
+        ByteBuffer buffer = ByteBuffer.wrap(new byte[] {0, 0, 0});
+
+        int absent = 0;
+        while (buffer.hasRemaining()) {
+            ParseAssert.absentNode(Owid.parse(buffer));
+            absent++;
+        }
+
+        assertEquals(3, absent, "should have read three absent nodes");
     }
 
     /**

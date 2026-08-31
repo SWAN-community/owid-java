@@ -64,7 +64,10 @@ public enum OwidParseStatus {
      * <p>Reading one frame out of something longer, this also covers a frame
      * whose declared payload and signature run past the bytes supplied, so a
      * caller reading from a source that is still arriving can wait for more
-     * and read again from the same place.</p>
+     * and read again from the same place. That is the settled rule across
+     * every implementation, not a choice this one made, because knowing
+     * whether to wait for more bytes or to give up on these is the thing a
+     * caller of a framed read most needs to be told.</p>
      */
     UNEXPECTED_END,
 
@@ -84,7 +87,9 @@ public enum OwidParseStatus {
      * envelope have to end where the input does. Reading one frame out of
      * something longer, bytes after the signature are the next frame rather
      * than a disagreement, and a frame that runs past the input is
-     * {@link #UNEXPECTED_END}.</p>
+     * {@link #UNEXPECTED_END}. Every implementation draws the line in the
+     * same place, so this status means a declaration disagreeing with data
+     * that is all present, and nothing else.</p>
      */
     BYTE_COUNT_MISMATCH,
 
@@ -107,17 +112,38 @@ public enum OwidParseStatus {
      * fallback for the genuinely unclassified, not a substitute for naming a
      * failure that is already understood.
      *
-     * <p>Not reachable in Java today, on either reading surface, and so not
-     * covered by a test. Every failure these readers can meet is classified
-     * by one of the members above. The one place that still reports this is
-     * the check that the envelope ended where the input did, which the framed
-     * read does not apply at all and which cannot fire on the whole buffer
-     * read while the declared payload count has already been required to
-     * leave exactly the signature. That check is kept as a backstop rather
-     * than removed, because a future change to the count arithmetic would
-     * otherwise start accepting bytes after the signature in silence.
-     * Loosening the count rule during a deliberate check of the tests made
-     * this status appear, so the backstop does work.</p>
+     * <p>One thing reaches it, being the marker for an absent node followed
+     * by bytes on the whole buffer contract, where the marker has to be the
+     * whole of the buffer and what follows belongs to no field.</p>
+     *
+     * <p>The other place that reports it is the check that an envelope ended
+     * where the input did, which the framed read does not apply at all and
+     * which cannot fire on the whole buffer read while the declared payload
+     * count has already been required to leave exactly the signature. That
+     * check is kept as a backstop rather than removed, because a future
+     * change to the count arithmetic would otherwise start accepting bytes
+     * after the signature in silence. Loosening the count rule during a
+     * deliberate check of the tests made it fire, so the backstop does
+     * work.</p>
      */
-    MALFORMED_ENVELOPE
+    MALFORMED_ENVELOPE,
+
+    /**
+     * The bytes are the marker for an absent optional OWID, being the single
+     * byte zero, so there is deliberately no identifier here.
+     *
+     * <p>Not a failure and not an OWID. Version zero is supported and it
+     * means something, which is why this is not
+     * {@link #UNSUPPORTED_VERSION}, but what it means is that a node is
+     * missing, so no value is handed back. The marker carries no domain, no
+     * date and no signature, and returning an OWID for it would put one in a
+     * caller's hands that nothing had ever signed.</p>
+     *
+     * <p>Reading one frame out of something longer, the marker is consumed,
+     * so a caller walking a run of frames can step over an absent node and
+     * read the one after it. Reading a whole buffer the marker has to be the
+     * whole of it, and bytes after it are
+     * {@link #MALFORMED_ENVELOPE}.</p>
+     */
+    ABSENT_NODE
 }

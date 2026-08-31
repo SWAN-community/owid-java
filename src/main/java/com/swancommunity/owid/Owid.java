@@ -205,18 +205,15 @@ public final class Owid {
             view.get(remaining);
             result = OwidReader.read(remaining, 0, remaining.length, true);
         }
-        if (result.isSuccess()) {
-            // Only a successful read moves the buffer on. A failed read
-            // reports consuming nothing, so the arithmetic alone would leave
-            // the buffer where it was, and this says so outright rather than
-            // resting on that.
-            //
-            // Buffer.position is called rather than ByteBuffer.position
-            // because the covariant override arrived in Java 9 and this
-            // library is built for 8.
-            ((Buffer) buffer).position(
-                    buffer.position() + result.getByteCount());
-        }
+        // The buffer moves on by exactly what the read occupied, which is the
+        // envelope for a success, the single byte for an absent node, and
+        // nothing at all for a failure. A failed read therefore leaves the
+        // buffer at the start of the frame that failed.
+        //
+        // Buffer.position is called rather than ByteBuffer.position because
+        // the covariant override arrived in Java 9 and this library is built
+        // for 8.
+        ((Buffer) buffer).position(buffer.position() + result.getByteCount());
         return result;
     }
 
@@ -254,13 +251,15 @@ public final class Owid {
      * Writes the marker for an absent optional OWID, being the single byte
      * zero, for embedding in a larger framed byte array.
      *
-     * <p>Every reading surface here, framed included, refuses it as
-     * {@link OwidParseStatus#UNSUPPORTED_VERSION}, because the marker stands
-     * for the absence of an identifier rather than for one, and handing back
-     * an OWID with no domain, no date and no signature would put one in a
-     * caller's hands that nothing had ever signed. A caller walking a stream
-     * that carries markers therefore has to skip them itself, there being no
-     * status in the shared vocabulary that means an absent node.</p>
+     * <p>Reading it back reports {@link OwidParseStatus#ABSENT_NODE} and
+     * hands back no value, because the marker stands for the absence of an
+     * identifier rather than for one, and an OWID with no domain, no date and
+     * no signature would be one nothing had ever signed. Read as a frame,
+     * through {@link #parse(ByteBuffer)}, the marker is consumed, so a caller
+     * walking a run of frames steps over the absent node and reads the frame
+     * after it. Read as a whole buffer the marker has to be the whole of it,
+     * and bytes after it are
+     * {@link OwidParseStatus#MALFORMED_ENVELOPE}.</p>
      *
      * @return a single byte array holding the empty marker
      */

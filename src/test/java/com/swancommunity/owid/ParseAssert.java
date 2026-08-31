@@ -69,4 +69,21 @@ final class ParseAssert {
         assertEquals(0, result.getByteCount(),
                 "a failed read should report consuming nothing");
     }
+
+    /**
+     * Asserts the bytes were the marker for an absent node, that nothing was
+     * handed back for it, and that it occupied the single byte a caller has
+     * to step over to reach the next frame.
+     */
+    static void absentNode(OwidParseResult result) {
+        assertNotNull(result, "a read should always report a result");
+        assertFalse(result.isSuccess(),
+                "the marker for an absent node is not an OWID");
+        assertEquals(OwidParseStatus.ABSENT_NODE, result.getStatus(),
+                "should report the absence of a node");
+        assertNull(result.getValue(),
+                "the marker should hand back no OWID");
+        assertEquals(1, result.getByteCount(),
+                "the marker should occupy the one byte it is");
+    }
 }

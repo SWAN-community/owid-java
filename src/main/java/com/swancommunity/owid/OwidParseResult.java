@@ -27,7 +27,7 @@ package com.swancommunity.owid;
  * <p>The three move together. When {@link #isSuccess()} is true the value is
  * not null and the status is {@link OwidParseStatus#PARSED}, and when it is
  * false the value is null and the status names one of the expected
- * problems.</p>
+ * problems, or says the bytes were the marker for an absent node.</p>
  *
  * <p>A result carries no text taken from the input. The bytes came from
  * outside, so putting them in a message would mean logging whatever an
@@ -62,6 +62,16 @@ public final class OwidParseResult {
     }
 
     /**
+     * The result of reading the marker for an absent node, which hands back
+     * no OWID but does occupy the bytes given, so a caller reading one frame
+     * after another steps over the absent node and reads the one after it.
+     */
+    static OwidParseResult absentNode(int byteCount) {
+        return new OwidParseResult(
+                null, OwidParseStatus.ABSENT_NODE, byteCount);
+    }
+
+    /**
      * Whether the bytes were a complete, structurally valid OWID. This says
      * nothing about whether the signature is genuine, which is a separate
      * question answered by
@@ -74,9 +84,10 @@ public final class OwidParseResult {
     }
 
     /**
-     * The OWID that was read, or null when the read failed. Callers should
+     * The OWID that was read, or null when there was none. Callers should
      * test {@link #isSuccess()} first rather than testing this for null,
-     * because the status also says which of the expected problems it was.
+     * because the status also says which of the expected problems it was, or
+     * that the bytes were the marker for an absent node.
      *
      * @return the OWID on success, otherwise null
      */
@@ -95,7 +106,7 @@ public final class OwidParseResult {
     }
 
     /**
-     * How many bytes the envelope occupied, or zero when the read failed.
+     * How many bytes the read occupied.
      *
      * <p>This is what a caller reading one frame after another needs in order
      * to find the next one. {@link Owid#parse(java.nio.ByteBuffer)} moves the
@@ -103,9 +114,13 @@ public final class OwidParseResult {
      * not have to. Reading a whole buffer this is the length of the buffer,
      * because there the envelope is the whole of it.</p>
      *
-     * <p>Zero on failure, since a read that failed consumed nothing.</p>
+     * <p>Three cases. The length of the envelope on success, one byte for
+     * {@link OwidParseStatus#ABSENT_NODE} so that a caller steps over the
+     * marker and reads the frame after it, and zero for every failure, since
+     * a read that failed consumed nothing and left the caller where it
+     * started.</p>
      *
-     * @return the length of the envelope in bytes, or zero
+     * @return the bytes the read occupied, or zero
      */
     public int getByteCount() {
         return byteCount;
