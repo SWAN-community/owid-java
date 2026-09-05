@@ -148,8 +148,9 @@ class DatedKeyFetchTest {
     /**
      * The same identifier against the same end point without the date, which
      * is the request a port that forgets the date makes. The end point
-     * answers with its current key, the signature does not match that key,
-     * and a genuine identifier reads as a forgery.
+     * answers with the key in force at the moment of the request, a week
+     * after the identifier was signed, the signature does not match that
+     * key, and a genuine identifier reads as a forgery.
      */
     @Test
     void undatedFetchLeavesAnEarlierWeeksIdentifierUnverified()
@@ -160,8 +161,8 @@ class DatedKeyFetchTest {
                 + "/owid/api/v3/public-key?format=pkcs";
         assertEquals(OwidSignatureStatus.SIGNATURE_INVALID,
                 PublicKeyFetch.verifyAtUrl(owid, undated, ALONE).getStatus(),
-                "an undated request gets the current key, which did not "
-                        + "sign it");
+                "an undated request gets the key in force at the request, "
+                        + "which did not sign it");
         assertEquals(Collections.singletonList((String) null),
                 endPoint.dates(),
                 "the request carried no date");

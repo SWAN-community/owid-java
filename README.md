@@ -397,8 +397,10 @@ domain, a null payload, or a field that cannot be serialized.
   - `keyInForce` and `keyFor` return the latest key whose start is at or
     before the date, or the date of the OWID, and null where the schedule
     does not reach back that far.
-  - `latest` returns the current key. `verify` chooses the key and answers
-    with the status.
+  - `current` returns the key in force now, and `last` the key with the
+    latest start, which for a schedule published ahead of time is usually a
+    key that has not begun. `verify` chooses the key and answers with the
+    status.
 - `DatedPublicKey` is one key and the date the key came into force. It holds
   no generation moment, so nothing can select by one.
 - `Endpoints` provides framework agnostic helpers for the well known end

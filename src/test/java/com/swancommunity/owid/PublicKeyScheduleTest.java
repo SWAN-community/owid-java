@@ -84,23 +84,51 @@ class PublicKeyScheduleTest {
     }
 
     /**
-     * The newest key in the schedule does not verify the identifier, which is
+     * The key in force a week later does not verify the identifier, which is
      * the whole reason the date has to be part of the question. Keys rotate
-     * weekly, so the key that is current when an identifier is checked is not
-     * the key that signed it unless the check happens in the same week.
+     * weekly, so the key in force when an identifier is checked is not the
+     * key that signed it unless the check happens in the same week.
      */
     @Test
-    void theLatestKeyDoesNotVerifyAnEarlierWeeksIdentifier()
+    void aLaterWeeksKeyDoesNotVerifyAnEarlierWeeksIdentifier()
             throws OwidException {
         Owid owid = KeyFixtures.identifier();
-        DatedPublicKey latest = KeyFixtures.schedule().latest();
-        assertNotNull(latest, "the schedule holds keys");
-        assertTrue(latest.getStartsAt().isAfter(owid.getDate()),
-                "the newest key starts after the identifier was signed");
+        DatedPublicKey later = KeyFixtures.schedule()
+                .keyInForce(KeyEndPoint.REQUEST_MOMENT);
+        assertNotNull(later, "the schedule covers the moment of the request");
+        assertTrue(later.getStartsAt().isAfter(owid.getDate()),
+                "the key in force a week later starts after the identifier "
+                        + "was signed");
         assertEquals(OwidSignatureStatus.SIGNATURE_INVALID,
-                owid.verify(latest.getPublicKeyPem(), ALONE).getStatus(),
+                owid.verify(later.getPublicKeyPem(), ALONE).getStatus(),
                 "a later week's key should not verify an earlier week's "
                         + "identifier");
+    }
+
+    /**
+     * The last key by start is not the key in force. A creator publishes its
+     * schedule ahead of time, so the last key is one whose period has not
+     * begun, and serving it where the current key was meant reports every
+     * genuine identifier as not matching. That is the fault the .NET port
+     * carried in its answer to a request with no date, and it is kept out of
+     * this port by holding the two questions apart.
+     */
+    @Test
+    void theLastKeyIsNotTheKeyInForce() throws OwidException {
+        Instant now = Instant.now();
+        PublicKeySchedule schedule = PublicKeySchedule.of(Arrays.asList(
+                DatedPublicKey.of(now.minus(Duration.ofDays(7)),
+                        KeyFixtures.scheduledKeys().get(0).pem()),
+                DatedPublicKey.of(now.plus(Duration.ofDays(7)),
+                        KeyFixtures.scheduledKeys().get(1).pem()),
+                DatedPublicKey.of(now.plus(Duration.ofDays(14)),
+                        KeyFixtures.scheduledKeys().get(2).pem())));
+        assertEquals(now.plus(Duration.ofDays(14)),
+                schedule.last().getStartsAt(),
+                "the last key is the one with the latest start");
+        assertEquals(now.minus(Duration.ofDays(7)),
+                schedule.current().getStartsAt(),
+                "the key in force now is the one that has started");
     }
 
     /**
@@ -222,7 +250,8 @@ class PublicKeyScheduleTest {
         PublicKeySchedule schedule = PublicKeySchedule.of(
                 Collections.<DatedPublicKey>emptyList());
         assertEquals(0, schedule.size(), "the schedule holds no keys");
-        assertNull(schedule.latest(), "there is no newest key");
+        assertNull(schedule.last(), "there is no last key");
+        assertNull(schedule.current(), "there is no key in force");
         assertNull(schedule.keyInForce(Instant.now()),
                 "no key was in force");
         assertEquals(OwidSignatureStatus.KEY_UNAVAILABLE,

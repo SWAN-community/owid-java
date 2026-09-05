@@ -25,6 +25,7 @@ import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -38,12 +39,24 @@ import java.util.List;
  * ports do for the same reason.</p>
  *
  * <p>A request naming a date is served the key that was in force then, a
- * request without one is served the newest key in the schedule, which is what
- * the current key means, and a date the schedule does not reach is a 404. The
- * date parameter of every request is recorded, so a test can say what went
- * over the wire rather than only what the URL builder returned.</p>
+ * request without one is served the key in force at the moment of the
+ * request, a date after that moment is read as that moment, and a date the
+ * schedule does not reach is a 404. That is how the cloud answers, and the
+ * moment of the request is fixed at {@link #REQUEST_MOMENT} so the tests are
+ * repeatable. The date parameter of every request is recorded, so a test can
+ * say what went over the wire rather than only what the URL builder
+ * returned.</p>
  */
 final class KeyEndPoint {
+
+    /**
+     * The moment the end point treats as now, a week after the fixture
+     * identifier was signed. An undated request is therefore served a key
+     * other than the one that signed the fixture, exactly as it would be
+     * against the live creator a week on.
+     */
+    static final Instant REQUEST_MOMENT =
+            Instant.parse("2026-09-14T00:00:00Z");
 
     /** What the end point serves. */
     enum Answer {
@@ -145,13 +158,15 @@ final class KeyEndPoint {
                     + "bm90IGEga2V5\n"
                     + "-----END PUBLIC KEY-----\n";
         }
-        DatedPublicKey key;
-        if (date == null) {
-            key = schedule.latest();
-        } else {
-            key = schedule.keyInForce(Io.baseDate()
-                    .plus(Duration.ofMinutes(Long.parseLong(date))));
+        Instant asked = REQUEST_MOMENT;
+        if (date != null) {
+            asked = Io.baseDate()
+                    .plus(Duration.ofMinutes(Long.parseLong(date)));
+            if (asked.isAfter(REQUEST_MOMENT)) {
+                asked = REQUEST_MOMENT;
+            }
         }
+        DatedPublicKey key = schedule.keyInForce(asked);
         if (key == null) {
             return null;
         }

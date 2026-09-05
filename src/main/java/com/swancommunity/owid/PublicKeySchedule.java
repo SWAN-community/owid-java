@@ -130,16 +130,35 @@ public final class PublicKeySchedule {
     }
 
     /**
-     * Returns the latest key in the schedule, being the key a request that
-     * names no date is served, or null where the schedule holds no keys.
+     * Returns the key with the latest start, or null where the schedule
+     * holds no keys.
      *
-     * @return the newest key by start, or null when there are none
+     * <p>This is not the key in force now. A creator publishes its schedule
+     * ahead of time, so the last key by start is usually one whose period
+     * has not begun and which has signed nothing yet. The key in force now
+     * is {@link #current()}. Serving the last key where the current one was
+     * meant is the same fault as selecting by the generation moment, being
+     * a key from a period that has not started, and it is the fault the
+     * .NET port carried in its answer to a request that named no date.</p>
+     *
+     * @return the key with the latest start, or null when there are none
      */
-    public DatedPublicKey latest() {
+    public DatedPublicKey last() {
         if (keys.isEmpty()) {
             return null;
         }
         return keys.get(keys.size() - 1);
+    }
+
+    /**
+     * Returns the key in force now, being the latest key whose start is at
+     * or before the current moment, or null where no key has started. This
+     * is what a creator serves for a request that names no date.
+     *
+     * @return the key in force now, or null when no key has started
+     */
+    public DatedPublicKey current() {
+        return keyInForce(Instant.now());
     }
 
     /**
