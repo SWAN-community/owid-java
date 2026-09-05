@@ -188,6 +188,13 @@ OwidVerificationResult result = schedule.verify(
     owid, Collections.<Owid>emptyList());
 ```
 
+Both snippets are compiled and run by `ReadmeExampleTest`, as the rest of
+the examples in this file are. The fetch one runs against a creator domain in
+the reserved `.invalid` name space, so it shows the shape of the call and the
+status a key that cannot be obtained produces, whilst the case where the key
+does arrive and the identifier verifies is covered by `DatedKeyFetchTest`
+against a stand in on the loopback address.
+
 The only date a key carries here is the date the key came into force. The
 moment key material was generated is deliberately absent, because creators
 generate keys in batches weeks ahead of the weeks the keys cover, so many
