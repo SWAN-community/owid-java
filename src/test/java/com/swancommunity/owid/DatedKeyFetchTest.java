@@ -17,6 +17,7 @@
 package com.swancommunity.owid;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -270,6 +271,33 @@ class DatedKeyFetchTest {
                 "the check still works once the cache is emptied");
         assertEquals(2, endPoint.dates().size(),
                 "emptying the cache means the key is fetched again");
+    }
+
+    /**
+     * Keys are held against the URL they came from, which names the minute,
+     * so two identifiers from different weeks fetch two different keys, and
+     * a key held for one week never answers for another. A store keyed by
+     * domain alone would hand the second identifier the first one's key.
+     */
+    @Test
+    void keysAreHeldPerRequestAndNotPerDomain()
+            throws IOException, OwidException {
+        KeyEndPoint endPoint = endPoint(KeyEndPoint.Answer.SCHEDULE);
+        Owid earlier = crafted(Version.VERSION3, KeyFixtures.IDENTIFIER_DOMAIN,
+                Instant.parse("2026-08-20T00:00:00Z"));
+        Owid later = crafted(Version.VERSION3, KeyFixtures.IDENTIFIER_DOMAIN,
+                Instant.parse("2026-09-04T00:00:00Z"));
+        String first = PublicKeyFetch.publicKeyPemAtUrl(
+                endPoint.urlFor(earlier), KeyFixtures.IDENTIFIER_DOMAIN);
+        String second = PublicKeyFetch.publicKeyPemAtUrl(
+                endPoint.urlFor(later), KeyFixtures.IDENTIFIER_DOMAIN);
+        assertNotEquals(first, second, "two weeks, two keys");
+        assertEquals(2, endPoint.dates().size(), "one request per week");
+        assertEquals(first, PublicKeyFetch.publicKeyPemAtUrl(
+                endPoint.urlFor(earlier), KeyFixtures.IDENTIFIER_DOMAIN),
+                "the held key is the one fetched for that week");
+        assertEquals(2, endPoint.dates().size(),
+                "a week already held is not asked for again");
     }
 
     /**
