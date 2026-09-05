@@ -21,6 +21,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.net.URLConnection;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
@@ -220,7 +221,21 @@ public final class PublicKeyFetch {
             throws OwidException {
         HttpURLConnection connection = null;
         try {
-            connection = (HttpURLConnection) new URL(url).openConnection();
+            URLConnection opened = new URL(url).openConnection();
+            if ((opened instanceof HttpURLConnection) == false) {
+                // A scheme the caller chose that does not make an HTTP
+                // request, such as file. Reported as a key that could not be
+                // obtained rather than allowed to escape as a cast failure,
+                // because every route into this class promises a status.
+                throw new PublicKeyFetchException(
+                        "the scheme used for domain " + quoted(domain)
+                                + " does not make an HTTP request",
+                        OwidSignatureStatus.KEY_UNAVAILABLE,
+                        domain,
+                        0,
+                        null);
+            }
+            connection = (HttpURLConnection) opened;
             connection.setRequestMethod("GET");
             connection.setConnectTimeout(CONNECT_TIMEOUT_MILLISECONDS);
             connection.setReadTimeout(READ_TIMEOUT_MILLISECONDS);

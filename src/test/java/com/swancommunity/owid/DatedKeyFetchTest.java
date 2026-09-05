@@ -289,6 +289,25 @@ class DatedKeyFetchTest {
                 "a URL that cannot be built leaves the signature unjudged");
     }
 
+    /**
+     * A scheme that does not make an HTTP request is reported as a key that
+     * could not be obtained, rather than escaping as a cast failure. Every
+     * route into the fetch promises a status, so no route may throw
+     * something unchecked past it.
+     *
+     * <p>The scheme used here has a handler in the JDK which opens no
+     * connection at all, so the test costs nothing and reaches nobody. A
+     * scheme with no handler takes the same route out, because the refusal
+     * to build the URL is reported as the same status.</p>
+     */
+    @Test
+    void aSchemeThatIsNotHttpIsKeyUnavailable() throws OwidException {
+        assertEquals(OwidSignatureStatus.KEY_UNAVAILABLE,
+                PublicKeyFetch.verify(
+                        KeyFixtures.identifier(), "mailto", ALONE).getStatus(),
+                "a scheme that fetches no key leaves the signature unjudged");
+    }
+
     /** The scheme and the OWID are both needed to build a URL. */
     @Test
     void missingValuesAreRefused() {
