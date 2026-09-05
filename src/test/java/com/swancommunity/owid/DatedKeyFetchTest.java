@@ -148,7 +148,7 @@ class DatedKeyFetchTest {
     /**
      * The same identifier against the same end point without the date, which
      * is the request a port that forgets the date makes. The end point
-     * answers with the key in force at the moment of the request, a week
+     * answers with the key in force at the moment of the request, ten days
      * after the identifier was signed, the signature does not match that
      * key, and a genuine identifier reads as a forgery.
      */

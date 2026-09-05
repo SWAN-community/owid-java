@@ -50,10 +50,11 @@ import java.util.List;
 final class KeyEndPoint {
 
     /**
-     * The moment the end point treats as now, a week after the fixture
-     * identifier was signed. An undated request is therefore served a key
-     * other than the one that signed the fixture, exactly as it would be
-     * against the live creator a week on.
+     * The moment the end point treats as now, ten days after the fixture
+     * identifier was signed and in the week that followed. Every port's
+     * stand in uses this moment. An undated request is therefore served a
+     * key other than the one that signed the fixture, exactly as it would
+     * be against the live creator in that week.
      */
     static final Instant REQUEST_MOMENT =
             Instant.parse("2026-09-14T00:00:00Z");
@@ -97,7 +98,16 @@ final class KeyEndPoint {
                 String date = parameter(
                         exchange.getRequestURI().getRawQuery(), "date");
                 endPoint.dates.add(date);
-                String body = body(schedule, answer, date);
+                String body;
+                try {
+                    body = body(schedule, answer, date);
+                } catch (NumberFormatException malformed) {
+                    // A date that is not a number is refused, as the cloud
+                    // refuses it, rather than failing inside the handler.
+                    exchange.sendResponseHeaders(400, -1);
+                    exchange.close();
+                    return;
+                }
                 if (body == null) {
                     exchange.sendResponseHeaders(404, -1);
                     exchange.close();

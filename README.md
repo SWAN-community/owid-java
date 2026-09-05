@@ -154,10 +154,12 @@ the date the identifier carries.
 `/owid/api/v{n}/public-key?date={minutes}&format=pkcs`, where the version in
 the path is the version byte of the identifier being checked and the minutes
 are counted from 2020-01-01 in the same way the identifier stores its date. A
-creator that does not support the dated lookup ignores the parameter and
-returns the current key, which is what a request without a date would have
-received anyway. Keys already fetched are held against the URL they came
-from, as the specification asks, and `clearCache` empties that store.
+creator that ignores the parameter returns its current key, so every
+identifier it signed under an earlier key reads as not matching, which is why
+a creator that rotates its key has to honour the date. Keys already fetched
+are held against the URL they came from, which names the domain, the version
+and the minute, up to 1024 of them before the store is emptied, and
+`clearCache` empties it on demand.
 
 ```java
 import com.swancommunity.owid.OwidSignatureStatus;

@@ -38,9 +38,10 @@ import java.util.concurrent.ConcurrentHashMap;
  * than a constant, and the minutes are counted from 2020-01-01 in the same
  * way the OWID stores the date. Creators rotate weekly, so without the date
  * only identifiers signed since the most recent rotation can be verified and
- * every older one reads as not matching. A creator that does not support the
- * dated lookup ignores the parameter and returns the current key, which is
- * what a request without a date would have received anyway.</p>
+ * every older one reads as not matching. A creator that ignores the
+ * parameter returns its current key, so every identifier it signed under an
+ * earlier key reads as not matching, which is why a creator that rotates its
+ * key has to honour the date.</p>
  *
  * <p>Only the JDK is used, so the library keeps its promise of no runtime
  * dependencies and still runs on Java 8, which has no HTTP client of its

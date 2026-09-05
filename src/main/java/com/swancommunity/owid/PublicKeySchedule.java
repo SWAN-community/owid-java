@@ -58,11 +58,10 @@ public final class PublicKeySchedule {
      * Creates a schedule over the keys provided. The keys may arrive in any
      * order and are held oldest start first.
      *
-     * <p>Where two keys share a start, the later one in the order supplied
-     * wins, because the sort keeps the supplied order among equal starts and
-     * the search runs from the newest end. A creator does not publish two
-     * keys for one start, so the case is settled rather than left to
-     * chance.</p>
+     * <p>Where two keys share a start, the one supplied first wins, which is
+     * how the 51Degrees cloud and the .NET port settle it. A creator does
+     * not publish two keys for one start, so the case is settled rather
+     * than left to chance.</p>
      *
      * @param keys the published keys
      * @return the schedule
@@ -123,6 +122,13 @@ public final class PublicKeySchedule {
         for (int i = keys.size() - 1; i >= 0; i--) {
             DatedPublicKey key = keys.get(i);
             if (key.getStartsAt().isAfter(date) == false) {
+                // The sort is stable, so keys sharing a start sit in the
+                // order supplied, and the first supplied is the answer.
+                while (i > 0 && keys.get(i - 1).getStartsAt()
+                        .equals(key.getStartsAt())) {
+                    i--;
+                    key = keys.get(i);
+                }
                 return key;
             }
         }

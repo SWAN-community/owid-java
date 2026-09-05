@@ -161,8 +161,8 @@ final class Io {
             }
             case VERSION2:
             case VERSION3: {
-                long minutes = Duration.between(baseDate(), date).toMinutes();
-                if (minutes < 0 || minutes > 0xFFFFFFFFL) {
+                long minutes = minutesSinceBase(date);
+                if (minutes < 0) {
                     throw dateOutOfRange();
                 }
                 writeUInt32(buffer, minutes);

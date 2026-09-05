@@ -84,7 +84,7 @@ class PublicKeyScheduleTest {
     }
 
     /**
-     * The key in force a week later does not verify the identifier, which is
+     * The key in force in the following week does not verify the identifier, which is
      * the whole reason the date has to be part of the question. Keys rotate
      * weekly, so the key in force when an identifier is checked is not the
      * key that signed it unless the check happens in the same week.
@@ -97,7 +97,7 @@ class PublicKeyScheduleTest {
                 .keyInForce(KeyEndPoint.REQUEST_MOMENT);
         assertNotNull(later, "the schedule covers the moment of the request");
         assertTrue(later.getStartsAt().isAfter(owid.getDate()),
-                "the key in force a week later starts after the identifier "
+                "the key in force in the following week starts after the identifier "
                         + "was signed");
         assertEquals(OwidSignatureStatus.SIGNATURE_INVALID,
                 owid.verify(later.getPublicKeyPem(), ALONE).getStatus(),
@@ -268,12 +268,13 @@ class PublicKeyScheduleTest {
     }
 
     /**
-     * Where two keys share a start, the later one supplied wins, so the
-     * answer is settled rather than left to the order a map or a fetch
-     * happened to produce.
+     * Where two keys share a start, the one supplied first wins, as the
+     * cloud and the .NET port settle it, so the answer is the same in every
+     * port rather than left to the order a map or a fetch happened to
+     * produce.
      */
     @Test
-    void twoKeysSharingAStartAreSettledByTheOrderSupplied()
+    void twoKeysSharingAStartAreSettledInFavourOfTheFirstSupplied()
             throws OwidException {
         Instant start = Instant.parse("2026-08-31T00:00:00Z");
         DatedPublicKey first = DatedPublicKey.of(start,
@@ -282,9 +283,13 @@ class PublicKeyScheduleTest {
                 KeyFixtures.scheduledKeys().get(1).pem());
         PublicKeySchedule schedule = PublicKeySchedule.of(
                 Arrays.asList(first, second));
-        assertEquals(second.getPublicKeyPem(),
+        assertEquals(first.getPublicKeyPem(),
                 schedule.keyInForce(start).getPublicKeyPem(),
-                "the later key supplied wins the shared start");
+                "the key supplied first wins the shared start");
+        assertEquals(first.getPublicKeyPem(),
+                schedule.keyInForce(start.plus(Duration.ofDays(1)))
+                        .getPublicKeyPem(),
+                "and keeps winning for the rest of the period");
     }
 
     /** The schedule and its keys refuse the values a caller cannot mean. */
