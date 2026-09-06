@@ -36,6 +36,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -179,8 +180,13 @@ class ReadmeExampleTest {
         Owid owid = Creator.create("owid.invalid", Crypto.generate())
                 .createString("signed by a creator that cannot be reached");
 
-        OwidVerificationResult result = PublicKeyFetch.verify(
-                owid, "https", Collections.<Owid>emptyList());
+        CompletableFuture<OwidVerificationResult> pending =
+                PublicKeyFetch.verify(
+                        owid, "https", Collections.<Owid>emptyList());
+        // The call returns at once and the request runs on a background
+        // thread. Continue from the future, or join it where waiting is
+        // acceptable, as it is here.
+        OwidVerificationResult result = pending.join();
         if (result.getStatus() == OwidSignatureStatus.KEY_UNAVAILABLE) {
             // The key could not be obtained, so the signature was never
             // examined. Only SIGNATURE_INVALID means the identifier should

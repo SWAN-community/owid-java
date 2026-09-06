@@ -16,15 +16,10 @@
 
 package com.swancommunity.owid;
 
-import java.io.ByteArrayOutputStream;
-import java.io.IOException;
-import java.io.InputStream;
-import java.net.HttpURLConnection;
-import java.net.URL;
-import java.net.URLConnection;
-import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -43,6 +38,18 @@ import java.util.concurrent.ConcurrentHashMap;
  * earlier key reads as not matching, which is why a creator that rotates its
  * key has to honour the date.</p>
  *
+ * <p>Every method here that reaches the network answers with a
+ * {@link CompletableFuture} and returns at once. There is no form that
+ * waits, so a request thread or an event loop is never held while a creator
+ * answers, and a caller that wants to wait joins the future itself. The
+ * request is made by a {@link PublicKeyTransport}, and where the caller
+ * names none {@link HttpUrlConnectionTransport} is used, which runs the
+ * JDK's blocking connection on a background thread. On Java 11 and later a
+ * caller can supply a transport over
+ * {@code java.net.http.HttpClient.sendAsync} instead, which blocks no thread
+ * at all. Building the URL is pure text and reaches nothing, so
+ * {@link #publicKeyUrl(Owid, String)} answers in the ordinary way.</p>
+ *
  * <p>Only the JDK is used, so the library keeps its promise of no runtime
  * dependencies and still runs on Java 8, which has no HTTP client of its
  * own.</p>
@@ -51,12 +58,6 @@ import java.util.concurrent.ConcurrentHashMap;
  * and the Go port with {@code SignatureStatusFromDomain}.</p>
  */
 public final class PublicKeyFetch {
-
-    /** How long to wait for the connection to be made, in milliseconds. */
-    private static final int CONNECT_TIMEOUT_MILLISECONDS = 5000;
-
-    /** How long to wait for the response, in milliseconds. */
-    private static final int READ_TIMEOUT_MILLISECONDS = 10000;
 
     /**
      * The most keys held in the cache before the cache is emptied and filled
@@ -67,16 +68,27 @@ public final class PublicKeyFetch {
     private static final int MAXIMUM_CACHED_KEYS = 1024;
 
     /**
-     * Keys already fetched, held against the URL the keys were fetched from.
+     * Keys fetched, or on their way, held against the URL they were asked
+     * for.
      *
      * <p>The specification asks implementations to cache so that verifying
      * many identifiers does not mean repeating requests to another
      * processor. Holding the key against the whole URL is safe because the
      * URL names the domain, the version and the minute, and the key a
      * creator published for a minute in the past does not change.</p>
+     *
+     * <p>The value is the future of the fetch rather than the key itself, so
+     * a second request for a key that is still on its way joins the request
+     * already made instead of making another. A fetch that fails is removed
+     * the moment it fails, so an outage is never remembered and the next
+     * request tries again.</p>
      */
-    private static final Map<String, String> CACHE =
-            new ConcurrentHashMap<String, String>();
+    private static final Map<String, CompletableFuture<String>> CACHE =
+            new ConcurrentHashMap<String, CompletableFuture<String>>();
+
+    /** The transport used where the caller names none. */
+    private static final PublicKeyTransport DEFAULT_TRANSPORT =
+            new HttpUrlConnectionTransport();
 
     private PublicKeyFetch() {
     }
@@ -122,198 +134,239 @@ public final class PublicKeyFetch {
     }
 
     /**
-     * Returns the public key PEM of the creator of the OWID, for the date
-     * the OWID carries.
+     * Fetches the public key PEM of the creator of the OWID, for the date
+     * the OWID carries, using {@link HttpUrlConnectionTransport} on its
+     * shared pool.
+     *
+     * <p>Returns at once. The future completes with the key in PEM form,
+     * fails with a {@link PublicKeyFetchException} where the key could not
+     * be obtained, carrying the status to report for the identifier, and
+     * fails with an {@link OwidException} where the OWID, the scheme or the
+     * domain is not usable. Nothing is thrown from the call itself.</p>
      *
      * @param owid   the OWID whose creator key is wanted
      * @param scheme the scheme to use, normally {@code https}
-     * @return the public key in PEM form
-     * @throws PublicKeyFetchException if the key could not be obtained, with
-     *                                 the status to report for the
-     *                                 identifier
-     * @throws OwidException           if the OWID, the scheme or the domain
-     *                                 is not usable
+     * @return the public key in PEM form, through a future
      */
-    public static String publicKeyPem(Owid owid, String scheme)
-            throws OwidException {
-        return publicKeyPemAtUrl(publicKeyUrl(owid, scheme),
-                owid.getDomain());
+    public static CompletableFuture<String> publicKeyPem(Owid owid,
+            String scheme) {
+        return publicKeyPem(owid, scheme, DEFAULT_TRANSPORT);
+    }
+
+    /**
+     * Fetches the public key PEM of the creator of the OWID, for the date
+     * the OWID carries, using the transport given.
+     *
+     * <p>Returns at once. The future completes with the key in PEM form,
+     * fails with a {@link PublicKeyFetchException} where the key could not
+     * be obtained, carrying the status to report for the identifier, and
+     * fails with an {@link OwidException} where the OWID, the scheme, the
+     * domain or the transport is not usable. Nothing is thrown from the
+     * call itself.</p>
+     *
+     * @param owid      the OWID whose creator key is wanted
+     * @param scheme    the scheme to use, normally {@code https}
+     * @param transport the transport to make the request with
+     * @return the public key in PEM form, through a future
+     */
+    public static CompletableFuture<String> publicKeyPem(Owid owid,
+            String scheme, PublicKeyTransport transport) {
+        String url;
+        try {
+            url = publicKeyUrl(owid, scheme);
+        } catch (OwidException e) {
+            return failed(e);
+        }
+        return publicKeyPemAtUrl(url, owid.getDomain(), transport);
     }
 
     /**
      * Asks whether the signature on the OWID is genuine, fetching the key
-     * that was in force when the OWID was signed from the creator domain.
+     * that was in force when the OWID was signed from the creator domain
+     * using {@link HttpUrlConnectionTransport} on its shared pool.
      *
-     * <p>A key that cannot be fetched is
+     * <p>Returns at once, and the future never fails, because every route
+     * out of the fetch promises a status. A key that cannot be fetched is
      * {@link OwidSignatureStatus#KEY_UNAVAILABLE} and one that arrives in a
      * form this library cannot read is
      * {@link OwidSignatureStatus#INVALID_KEY}. Neither is
      * {@link OwidSignatureStatus#SIGNATURE_INVALID}, because an outage or a
      * badly served key leaves the signature unjudged, and reporting either
-     * as invalid would read as an attack.</p>
+     * as invalid would read as an attack. The signature is examined on the
+     * thread that completes the fetch, which for the default transport is
+     * one of its pool, or on the caller's own thread where the key is
+     * already held.</p>
      *
      * @param owid   the OWID to check
      * @param scheme the scheme to use, normally {@code https}
      * @param others the other OWIDs that were signed together with this one,
      *               in the same order as when signed
-     * @return the outcome of the check
+     * @return the outcome of the check, through a future
      */
-    public static OwidVerificationResult verify(Owid owid, String scheme,
-            List<Owid> others) {
+    public static CompletableFuture<OwidVerificationResult> verify(Owid owid,
+            String scheme, List<Owid> others) {
+        return verify(owid, scheme, others, DEFAULT_TRANSPORT);
+    }
+
+    /**
+     * Asks whether the signature on the OWID is genuine, fetching the key
+     * that was in force when the OWID was signed from the creator domain
+     * using the transport given.
+     *
+     * <p>Returns at once, and the future never fails, because every route
+     * out of the fetch promises a status. A key that cannot be fetched, a
+     * URL that cannot be built and a transport that is missing are all
+     * {@link OwidSignatureStatus#KEY_UNAVAILABLE}, and a key that arrives in
+     * a form this library cannot read is
+     * {@link OwidSignatureStatus#INVALID_KEY}. Neither is
+     * {@link OwidSignatureStatus#SIGNATURE_INVALID}, because an outage or a
+     * badly served key leaves the signature unjudged, and reporting either
+     * as invalid would read as an attack. The signature is examined on the
+     * thread that completes the fetch, or on the caller's own thread where
+     * the key is already held.</p>
+     *
+     * @param owid      the OWID to check
+     * @param scheme    the scheme to use, normally {@code https}
+     * @param others    the other OWIDs that were signed together with this
+     *                  one, in the same order as when signed
+     * @param transport the transport to make the request with
+     * @return the outcome of the check, through a future
+     */
+    public static CompletableFuture<OwidVerificationResult> verify(Owid owid,
+            String scheme, List<Owid> others, PublicKeyTransport transport) {
         String url;
         try {
             url = publicKeyUrl(owid, scheme);
         } catch (OwidException e) {
-            return OwidVerificationResult.of(
-                    OwidSignatureStatus.KEY_UNAVAILABLE);
+            return CompletableFuture.completedFuture(
+                    OwidVerificationResult.of(
+                            OwidSignatureStatus.KEY_UNAVAILABLE));
         }
-        return verifyAtUrl(owid, url, others);
+        return verifyAtUrl(owid, url, others, transport);
     }
 
     /**
      * Empties the cache of keys already fetched. Provided so that a long
      * running process can release the memory, and so that a test can start
-     * from a known state.
+     * from a known state. A fetch still on its way is forgotten here but
+     * still completes for whoever holds its future.
      */
     public static void clearCache() {
         CACHE.clear();
     }
 
     /**
-     * The work {@link #verify(Owid, String, List)} does once the URL is
-     * known, kept apart so that the tests drive the real fetch against a key
-     * end point the tests can stand up locally rather than against a near
-     * copy of the fetch.
+     * The work {@link #verify(Owid, String, List, PublicKeyTransport)} does
+     * once the URL is known, kept apart so that the tests drive the real
+     * fetch against a key end point the tests can stand up locally rather
+     * than against a near copy of the fetch.
      */
-    static OwidVerificationResult verifyAtUrl(Owid owid, String url,
-            List<Owid> others) {
-        String pem;
-        try {
-            pem = publicKeyPemAtUrl(url, owid.getDomain());
-        } catch (PublicKeyFetchException e) {
-            return OwidVerificationResult.of(e.getStatus());
-        } catch (OwidException e) {
-            return OwidVerificationResult.of(
-                    OwidSignatureStatus.KEY_UNAVAILABLE);
-        }
-        return owid.verify(pem, others);
+    static CompletableFuture<OwidVerificationResult> verifyAtUrl(
+            final Owid owid, String url, final List<Owid> others,
+            PublicKeyTransport transport) {
+        return publicKeyPemAtUrl(url, owid.getDomain(), transport)
+                .handle((pem, failure) -> {
+                    if (failure != null) {
+                        return OwidVerificationResult.of(statusOf(failure));
+                    }
+                    return owid.verify(pem, others);
+                });
     }
 
     /**
      * Fetches the PEM at the URL, answering from the cache where the same
-     * URL has already been fetched.
+     * URL has already been fetched or is being fetched now.
+     *
+     * <p>The future held in the cache is this class's own rather than the
+     * transport's, so that the transport's completion can be watched and a
+     * failure dropped from the cache without touching the map from inside
+     * one of its own operations, which a concurrent map does not allow.</p>
      */
-    static String publicKeyPemAtUrl(String url, String domain)
-            throws OwidException {
-        String cached = CACHE.get(url);
-        if (cached != null) {
-            return cached;
+    static CompletableFuture<String> publicKeyPemAtUrl(final String url,
+            String domain, PublicKeyTransport transport) {
+        if (transport == null) {
+            return failed(new OwidException("the transport is missing"));
         }
-        String pem = read(url, domain);
+        CompletableFuture<String> held = CACHE.get(url);
+        if (held != null) {
+            return held;
+        }
         if (CACHE.size() >= MAXIMUM_CACHED_KEYS) {
             CACHE.clear();
         }
-        CACHE.put(url, pem);
-        return pem;
-    }
-
-    /** Performs the request and returns the body as text. */
-    private static String read(String url, String domain)
-            throws OwidException {
-        HttpURLConnection connection = null;
+        final CompletableFuture<String> fetch = new CompletableFuture<String>();
+        held = CACHE.putIfAbsent(url, fetch);
+        if (held != null) {
+            // Another thread asked for the same key between the lookup and
+            // the insert, and its fetch is the one both callers share.
+            return held;
+        }
+        CompletableFuture<String> started;
         try {
-            URLConnection opened = new URL(url).openConnection();
-            if ((opened instanceof HttpURLConnection) == false) {
-                // A scheme the caller chose that does not make an HTTP
-                // request, such as file. Reported as a key that could not be
-                // obtained rather than allowed to escape as a cast failure,
-                // because every route into this class promises a status.
-                throw new PublicKeyFetchException(
-                        "the scheme used for domain " + quoted(domain)
-                                + " does not make an HTTP request",
-                        OwidSignatureStatus.KEY_UNAVAILABLE,
-                        domain,
-                        0,
-                        null);
-            }
-            connection = (HttpURLConnection) opened;
-            // Never follow a redirect. HttpURLConnection follows one to
-            // any other host by default, so a creator whose domain
-            // answered 302 to some other place would have that other
-            // place's key trusted as its own, and a network attacker able
-            // to bend the creator's DNS, or a creator that was simply
-            // misconfigured, could put a key there and have forgeries
-            // verify. Left alone, the 3xx is the response code, and the
-            // check below reads it as the key being unavailable, which it
-            // is.
-            connection.setInstanceFollowRedirects(false);
-            connection.setRequestMethod("GET");
-            connection.setConnectTimeout(CONNECT_TIMEOUT_MILLISECONDS);
-            connection.setReadTimeout(READ_TIMEOUT_MILLISECONDS);
-            connection.setRequestProperty("Accept", "text/plain");
-            int code = connection.getResponseCode();
-            if (code != HttpURLConnection.HTTP_OK) {
-                drain(connection.getErrorStream());
-                throw new PublicKeyFetchException(
-                        "domain " + quoted(domain) + " returned code '" + code
-                                + "' for the public key",
-                        OwidSignatureStatus.KEY_UNAVAILABLE,
-                        domain,
-                        code,
-                        null);
-            }
-            InputStream body = connection.getInputStream();
-            try {
-                return new String(readAll(body), StandardCharsets.UTF_8);
-            } finally {
-                body.close();
-            }
-        } catch (IOException e) {
-            // A refused connection, a name that does not resolve and a
-            // timeout all arrive here, and all of them mean the signature
-            // was never examined.
-            throw new PublicKeyFetchException(
-                    "the public key could not be fetched from domain "
-                            + quoted(domain),
-                    OwidSignatureStatus.KEY_UNAVAILABLE,
-                    domain,
-                    0,
-                    e);
-        } finally {
-            if (connection != null) {
-                connection.disconnect();
-            }
+            started = transport.fetch(url, domain);
+        } catch (RuntimeException e) {
+            // A transport keeps its promise by failing the future rather
+            // than throwing, but one that breaks the promise must not leave
+            // a future in the cache that never completes.
+            started = failed(e);
         }
+        if (started == null) {
+            started = failed(new PublicKeyFetchException(
+                    "the transport returned no future for domain '" + domain
+                            + "'",
+                    OwidSignatureStatus.KEY_UNAVAILABLE, domain, 0, null));
+        }
+        started.whenComplete((pem, failure) -> {
+            if (failure == null && pem != null) {
+                fetch.complete(pem);
+                return;
+            }
+            // Only this fetch is removed, never whatever replaced it after
+            // the cache was emptied and filled again in the meantime.
+            CACHE.remove(url, fetch);
+            fetch.completeExceptionally(failure != null
+                    ? unwrap(failure)
+                    : new PublicKeyFetchException(
+                            "the transport returned no key for domain '"
+                                    + domain + "'",
+                            OwidSignatureStatus.KEY_UNAVAILABLE, domain, 0,
+                            null));
+        });
+        return fetch;
     }
 
-    /** The value in single quotes, for a message. */
-    private static String quoted(String value) {
-        return "'" + value + "'";
+    /** A future that has already failed with the exception given. */
+    private static <T> CompletableFuture<T> failed(Throwable failure) {
+        CompletableFuture<T> future = new CompletableFuture<T>();
+        future.completeExceptionally(failure);
+        return future;
     }
 
-    /** Reads a stream to its end. */
-    private static byte[] readAll(InputStream stream) throws IOException {
-        ByteArrayOutputStream buffer = new ByteArrayOutputStream();
-        byte[] block = new byte[4096];
-        int read = stream.read(block);
-        while (read > 0) {
-            buffer.write(block, 0, read);
-            read = stream.read(block);
+    /**
+     * The exception a failed future carries, with the wrapper a dependent
+     * future adds taken off so the one the transport raised is what a
+     * caller sees.
+     */
+    private static Throwable unwrap(Throwable failure) {
+        Throwable cause = failure;
+        while (cause instanceof CompletionException
+                && cause.getCause() != null) {
+            cause = cause.getCause();
         }
-        return buffer.toByteArray();
+        return cause;
     }
 
-    /** Closes the error body of a refused request, where there is one. */
-    private static void drain(InputStream stream) {
-        if (stream == null) {
-            return;
+    /**
+     * The status to report for a fetch that failed. A fetch failure carries
+     * its own status, and anything else, such as a URL that could not be
+     * built, means the key was never obtained.
+     */
+    private static OwidSignatureStatus statusOf(Throwable failure) {
+        Throwable cause = unwrap(failure);
+        if (cause instanceof PublicKeyFetchException) {
+            return ((PublicKeyFetchException) cause).getStatus();
         }
-        try {
-            stream.close();
-        } catch (IOException e) {
-            // Nothing useful can be done about a body that will not close,
-            // and the refusal itself is what the caller is told about.
-        }
+        return OwidSignatureStatus.KEY_UNAVAILABLE;
     }
 
     /**

@@ -17,7 +17,8 @@
 package com.swancommunity.owid;
 
 /**
- * Raised when the public key of a creator could not be obtained.
+ * Carried by the failed future when the public key of a creator could not
+ * be obtained.
  *
  * <p>The status to report is decided where the failure happens and carried
  * here, so a caller never has to read message text to tell an outage from a

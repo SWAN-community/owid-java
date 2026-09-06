@@ -33,7 +33,10 @@ creates, signs, serializes, and verifies OWIDs.
   to any web framework.
 - Fetching the public key of another creator uses `HttpURLConnection` from
   the JDK, so verifying over the network adds no dependency and still runs on
-  Java 8.
+  Java 8. Every method that reaches the network answers with a
+  `CompletableFuture`, and the blocking connection runs on a background
+  thread. A transport over `java.net.http.HttpClient.sendAsync` can be
+  supplied on Java 11 and later.
 
 ## Payload size and application limits
 
@@ -159,15 +162,37 @@ identifier it signed under an earlier key reads as not matching, which is why
 a creator that rotates its key has to honour the date. Keys already fetched
 are held against the URL they came from, which names the domain, the version
 and the minute, up to 1024 of them before the store is emptied, and
-`clearCache` empties it on demand.
+`clearCache` empties it on demand. Two requests for the same key made while
+the first is still on its way share one request, and a fetch that fails is
+not held, so the next request asks again.
+
+Every method that reaches the network answers with a `CompletableFuture` and
+returns at once. There is no form that waits, so a request thread or an event
+loop is never held while a creator answers, and a caller that wants to wait
+joins the future itself. The request is made by a `PublicKeyTransport`, and
+where none is named `HttpUrlConnectionTransport` is used, which runs the
+JDK's blocking `HttpURLConnection` on a background thread. The pool it uses
+has daemon threads, never more of them than twice the processors available,
+and requests beyond that wait in a queue. An `Executor` of your own can be
+given to its constructor instead. On Java 11 and later supply a transport of
+your own over `java.net.http.HttpClient.sendAsync`, which blocks no thread at
+all. Any transport must never follow a redirect and must request the URL
+exactly as given, for the reasons the interface comment sets out.
 
 ```java
 import com.swancommunity.owid.OwidSignatureStatus;
 import com.swancommunity.owid.OwidVerificationResult;
 import com.swancommunity.owid.PublicKeyFetch;
 
-OwidVerificationResult result = PublicKeyFetch.verify(
-    owid, "https", Collections.<Owid>emptyList());
+import java.util.concurrent.CompletableFuture;
+
+CompletableFuture<OwidVerificationResult> pending =
+        PublicKeyFetch.verify(
+                owid, "https", Collections.<Owid>emptyList());
+// The call returns at once and the request runs on a background
+// thread. Continue from the future, or join it where waiting is
+// acceptable, as it is here.
+OwidVerificationResult result = pending.join();
 if (result.getStatus() == OwidSignatureStatus.KEY_UNAVAILABLE) {
     // The key could not be obtained, so the signature was never examined.
     // Only SIGNATURE_INVALID means the identifier should be distrusted.
@@ -387,12 +412,24 @@ domain, a null payload, or a field that cannot be serialized.
   point on the domain the OWID carries.
   - `publicKeyUrl` builds the request, naming the version of the OWID and the
     minute the OWID was signed.
-  - `publicKeyPem` returns the key, raising `PublicKeyFetchException`, which
-    carries the status to report, the domain and the response code.
-  - `verify` answers with the status, so a key that could not be fetched is
-    `KEY_UNAVAILABLE`, one that could not be read is `INVALID_KEY`, and
-    neither is mistaken for a signature that does not match.
+  - `publicKeyPem` returns a `CompletableFuture` of the key. The future fails
+    with `PublicKeyFetchException`, which carries the status to report, the
+    domain and the response code, where the key could not be obtained.
+  - `verify` returns a `CompletableFuture` of the status, so a key that
+    could not be fetched is `KEY_UNAVAILABLE`, one that could not be read is
+    `INVALID_KEY`, and neither is mistaken for a signature that does not
+    match. The future never fails.
+  - Both take an optional `PublicKeyTransport`, and use
+    `HttpUrlConnectionTransport` on its shared pool where none is given.
   - `clearCache` empties the keys already fetched.
+- `PublicKeyTransport` makes the request and answers with a
+  `CompletableFuture` of the body, so a transport over any HTTP client can
+  be supplied. It must never follow a redirect and must request the URL
+  exactly as given.
+- `HttpUrlConnectionTransport` is the transport used where none is named,
+  running `HttpURLConnection` on an `Executor`, either one given to its
+  constructor or a shared pool of daemon threads bounded at twice the
+  processors available.
 - `PublicKeySchedule` holds the keys a creator has published and chooses
   between them.
   - `PublicKeySchedule.of` takes the keys in any order.

@@ -17,8 +17,11 @@
 package com.swancommunity.owid;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -30,6 +33,12 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.Executor;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -43,11 +52,18 @@ import org.junit.jupiter.api.Test;
  * 51d.es schedule. The URL under test is the one the library builds, with
  * only the host replaced, so a fault in the path or the query is caught
  * here.</p>
+ *
+ * <p>Every fetch answers with a future. The tests join the future, which is
+ * fine here and is not what a caller on a request thread would do.</p>
  */
 class DatedKeyFetchTest {
 
     /** No other OWIDs were covered by the signature on the fixture. */
     private static final List<Owid> ALONE = Collections.emptyList();
+
+    /** The transport a caller gets without naming one. */
+    private static final PublicKeyTransport HTTP =
+            new HttpUrlConnectionTransport();
 
     /** The end points started by a test, stopped when the test ends. */
     private final List<KeyEndPoint> started = new ArrayList<KeyEndPoint>();
@@ -74,6 +90,29 @@ class DatedKeyFetchTest {
         KeyEndPoint endPoint = KeyEndPoint.start(answer);
         started.add(endPoint);
         return endPoint;
+    }
+
+    /** The status a fetch through the default transport ends with. */
+    private static OwidSignatureStatus statusAt(Owid owid, String url) {
+        return PublicKeyFetch.verifyAtUrl(owid, url, ALONE, HTTP).join()
+                .getStatus();
+    }
+
+    /** The PEM a fetch through the default transport ends with. */
+    private static String pemAt(String url, String domain) {
+        return PublicKeyFetch.publicKeyPemAtUrl(url, domain, HTTP).join();
+    }
+
+    /**
+     * The exception a failed future carries. Joining wraps it in a
+     * completion exception, and the one inside is the one the library
+     * raised.
+     */
+    private static <T extends Throwable> T failureOf(
+            CompletableFuture<?> future, Class<T> type, String message) {
+        CompletionException wrapped = assertThrows(CompletionException.class,
+                future::join, message);
+        return assertInstanceOf(type, wrapped.getCause(), message);
     }
 
     /**
@@ -135,8 +174,7 @@ class DatedKeyFetchTest {
         Owid owid = KeyFixtures.identifier();
         KeyEndPoint endPoint = endPoint(KeyEndPoint.Answer.SCHEDULE);
         assertEquals(OwidSignatureStatus.SIGNATURE_VALID,
-                PublicKeyFetch.verifyAtUrl(owid, endPoint.urlFor(owid), ALONE)
-                        .getStatus(),
+                statusAt(owid, endPoint.urlFor(owid)),
                 "should verify against the key in force when it was signed");
         assertEquals(
                 Collections.singletonList(
@@ -161,7 +199,7 @@ class DatedKeyFetchTest {
         String undated = endPoint.base()
                 + "/owid/api/v3/public-key?format=pkcs";
         assertEquals(OwidSignatureStatus.SIGNATURE_INVALID,
-                PublicKeyFetch.verifyAtUrl(owid, undated, ALONE).getStatus(),
+                statusAt(owid, undated),
                 "an undated request gets the key in force at the request, "
                         + "which did not sign it");
         assertEquals(Collections.singletonList((String) null),
@@ -185,7 +223,7 @@ class DatedKeyFetchTest {
         String url = endPoint.base() + "/owid/api/v3/public-key?date="
                 + Io.minutesSinceBase(before) + "&format=pkcs";
         assertEquals(OwidSignatureStatus.KEY_UNAVAILABLE,
-                PublicKeyFetch.verifyAtUrl(owid, url, ALONE).getStatus(),
+                statusAt(owid, url),
                 "no key means the signature was never examined");
     }
 
@@ -194,11 +232,11 @@ class DatedKeyFetchTest {
     void aRefusedRequestCarriesTheStatusAndTheCode()
             throws IOException, OwidException {
         KeyEndPoint endPoint = endPoint(KeyEndPoint.Answer.SCHEDULE);
-        final String url = endPoint.base() + "/owid/api/v3/public-key?date=0"
+        String url = endPoint.base() + "/owid/api/v3/public-key?date=0"
                 + "&format=pkcs";
-        PublicKeyFetchException failure = assertThrows(
+        PublicKeyFetchException failure = failureOf(
+                PublicKeyFetch.publicKeyPemAtUrl(url, "51d.es", HTTP),
                 PublicKeyFetchException.class,
-                () -> PublicKeyFetch.publicKeyPemAtUrl(url, "51d.es"),
                 "a date the schedule does not reach is refused");
         assertEquals(OwidSignatureStatus.KEY_UNAVAILABLE,
                 failure.getStatus(),
@@ -222,18 +260,11 @@ class DatedKeyFetchTest {
         String url = endPoint.urlFor(owid);
         endPoint.stop();
         assertEquals(OwidSignatureStatus.KEY_UNAVAILABLE,
-                PublicKeyFetch.verifyAtUrl(owid, url, ALONE).getStatus(),
+                statusAt(owid, url),
                 "a connection that is refused leaves the signature "
                         + "unjudged");
     }
 
-    /**
-     * Key material that arrives but cannot be read is the fault of the key
-     * and not of the identifier, so it is reported apart from a signature
-     * that does not match. This is the 30 August 2026 fault, where the key
-     * end points served PEM a strict parser refused and every offline check
-     * against them failed while the keys and the identifiers were both fine.
-     */
     /**
      * A creator whose domain answers with a redirect does not get the key
      * at the other end trusted as its own. The other end here serves the
@@ -251,8 +282,7 @@ class DatedKeyFetchTest {
                 KeyEndPoint.Answer.REDIRECT, elsewhere.urlFor(owid));
         started.add(creator);
         assertEquals(OwidSignatureStatus.KEY_UNAVAILABLE,
-                PublicKeyFetch.verifyAtUrl(owid, creator.urlFor(owid), ALONE)
-                        .getStatus(),
+                statusAt(owid, creator.urlFor(owid)),
                 "a redirect is the key being unavailable, never a key from "
                         + "wherever it points");
         assertEquals(1, creator.dates().size(),
@@ -262,14 +292,20 @@ class DatedKeyFetchTest {
                         + "never made");
     }
 
+    /**
+     * Key material that arrives but cannot be read is the fault of the key
+     * and not of the identifier, so it is reported apart from a signature
+     * that does not match. This is the 30 August 2026 fault, where the key
+     * end points served PEM a strict parser refused and every offline check
+     * against them failed while the keys and the identifiers were both fine.
+     */
     @Test
     void aKeyThatCannotBeReadIsInvalidKey()
             throws IOException, OwidException {
         Owid owid = KeyFixtures.identifier();
         KeyEndPoint endPoint = endPoint(KeyEndPoint.Answer.BROKEN_KEY);
         assertEquals(OwidSignatureStatus.INVALID_KEY,
-                PublicKeyFetch.verifyAtUrl(owid, endPoint.urlFor(owid), ALONE)
-                        .getStatus(),
+                statusAt(owid, endPoint.urlFor(owid)),
                 "a key that cannot be read is not a signature that does not "
                         + "match");
     }
@@ -286,19 +322,163 @@ class DatedKeyFetchTest {
         KeyEndPoint endPoint = endPoint(KeyEndPoint.Answer.SCHEDULE);
         String url = endPoint.urlFor(owid);
         assertEquals(OwidSignatureStatus.SIGNATURE_VALID,
-                PublicKeyFetch.verifyAtUrl(owid, url, ALONE).getStatus(),
+                statusAt(owid, url),
                 "the first check fetches the key");
         assertEquals(OwidSignatureStatus.SIGNATURE_VALID,
-                PublicKeyFetch.verifyAtUrl(owid, url, ALONE).getStatus(),
+                statusAt(owid, url),
                 "the second check answers from the cache");
         assertEquals(1, endPoint.dates().size(),
                 "the end point was asked once");
         PublicKeyFetch.clearCache();
         assertEquals(OwidSignatureStatus.SIGNATURE_VALID,
-                PublicKeyFetch.verifyAtUrl(owid, url, ALONE).getStatus(),
+                statusAt(owid, url),
                 "the check still works once the cache is emptied");
         assertEquals(2, endPoint.dates().size(),
                 "emptying the cache means the key is fetched again");
+    }
+
+    /**
+     * Two requests for the same key made while the first is still on its
+     * way share one request. The transport here answers only when the test
+     * lets it, so both requests are in flight together for certain, and
+     * the count of requests the transport saw is the whole point.
+     */
+    @Test
+    void twoRequestsInFlightForOneKeyMakeOneRequest()
+            throws IOException, OwidException {
+        Owid owid = KeyFixtures.identifier();
+        KeyEndPoint endPoint = endPoint(KeyEndPoint.Answer.SCHEDULE);
+        String url = endPoint.urlFor(owid);
+        HeldTransport held = new HeldTransport();
+        CompletableFuture<String> first = PublicKeyFetch.publicKeyPemAtUrl(
+                url, owid.getDomain(), held);
+        CompletableFuture<String> second = PublicKeyFetch.publicKeyPemAtUrl(
+                url, owid.getDomain(), held);
+        assertEquals(1, held.requests.get(),
+                "the second request joins the first rather than asking "
+                        + "again");
+        assertSame(first, second, "both callers hold the same fetch");
+        assertFalse(first.isDone(), "nothing has answered yet");
+        // The genuine key, fetched through the transport itself rather than
+        // through the cache, because the cache holds the fetch still on its
+        // way and would hand back that same waiting future.
+        held.answer.complete(HTTP.fetch(url, owid.getDomain()).join());
+        assertEquals(first.join(), second.join(),
+                "both callers get the one key that was fetched");
+        assertEquals(OwidSignatureStatus.SIGNATURE_VALID,
+                PublicKeyFetch.verifyAtUrl(owid, url, ALONE, held).join()
+                        .getStatus(),
+                "the key that arrived verifies the identifier");
+        assertEquals(1, held.requests.get(),
+                "a key already held is not asked for again");
+    }
+
+    /**
+     * A fetch that fails is not held, so the next request for the same key
+     * asks again rather than repeating the failure for as long as the
+     * process runs. An outage is not a fact about the key.
+     */
+    @Test
+    void aFetchThatFailsIsNotHeld() throws IOException, OwidException {
+        Owid owid = KeyFixtures.identifier();
+        KeyEndPoint endPoint = endPoint(KeyEndPoint.Answer.SCHEDULE);
+        String url = endPoint.urlFor(owid);
+        HeldTransport held = new HeldTransport();
+        CompletableFuture<String> first = PublicKeyFetch.publicKeyPemAtUrl(
+                url, owid.getDomain(), held);
+        held.answer.completeExceptionally(new PublicKeyFetchException(
+                "the creator is away", OwidSignatureStatus.KEY_UNAVAILABLE,
+                owid.getDomain(), 503, null));
+        PublicKeyFetchException failure = failureOf(first,
+                PublicKeyFetchException.class,
+                "the failure reaches the caller as the library raised it");
+        assertEquals(503, failure.getStatusCode(),
+                "the failure is the one the transport gave");
+        assertEquals(OwidSignatureStatus.SIGNATURE_VALID,
+                statusAt(owid, url),
+                "the next request asks again and the key arrives");
+        assertEquals(1, held.requests.get(),
+                "the failed transport was asked once");
+        assertEquals(1, endPoint.dates().size(),
+                "the end point was asked once, by the request that came "
+                        + "after the failure");
+    }
+
+    /**
+     * The request runs on the executor the caller gave the transport, and
+     * not on the thread that asked, which is what makes the fetch safe to
+     * call from a request thread or an event loop.
+     */
+    @Test
+    void theRequestRunsOnTheExecutorGiven()
+            throws IOException, OwidException {
+        Owid owid = KeyFixtures.identifier();
+        KeyEndPoint endPoint = endPoint(KeyEndPoint.Answer.SCHEDULE);
+        final AtomicReference<Thread> ran = new AtomicReference<Thread>();
+        Executor executor = task -> {
+            Thread thread = new Thread(task, "the executor given");
+            ran.set(thread);
+            thread.start();
+        };
+        PublicKeyTransport transport =
+                new HttpUrlConnectionTransport(executor);
+        String url = endPoint.urlFor(owid);
+        CompletableFuture<String> fetch = transport.fetch(url,
+                owid.getDomain());
+        assertNotNull(ran.get(), "the executor was given the request");
+        assertNotEquals(Thread.currentThread(), ran.get(),
+                "the thread that asked is not the one that fetches");
+        assertEquals(OwidSignatureStatus.SIGNATURE_VALID,
+                owid.verify(fetch.join(), ALONE).getStatus(),
+                "the key fetched on the executor verifies the identifier");
+    }
+
+    /**
+     * An executor that refuses the request, because it has been shut down
+     * or is full, fails the future rather than throwing at the caller, so a
+     * caller has one place to look for every failure.
+     */
+    @Test
+    void aRequestTheExecutorRefusesIsKeyUnavailable()
+            throws IOException, OwidException {
+        Owid owid = KeyFixtures.identifier();
+        KeyEndPoint endPoint = endPoint(KeyEndPoint.Answer.SCHEDULE);
+        Executor refusing = task -> {
+            throw new RejectedExecutionException("shut down");
+        };
+        PublicKeyTransport transport =
+                new HttpUrlConnectionTransport(refusing);
+        PublicKeyFetchException failure = failureOf(
+                transport.fetch(endPoint.urlFor(owid), owid.getDomain()),
+                PublicKeyFetchException.class,
+                "the refusal arrives through the future");
+        assertEquals(OwidSignatureStatus.KEY_UNAVAILABLE,
+                failure.getStatus(), "no request means no key");
+        assertEquals(owid.getDomain(), failure.getDomain(),
+                "the domain asked of is carried");
+        assertEquals(OwidSignatureStatus.KEY_UNAVAILABLE,
+                PublicKeyFetch.verifyAtUrl(owid, endPoint.urlFor(owid),
+                        ALONE, transport).join().getStatus(),
+                "a check through the refusing executor is unjudged");
+        assertTrue(endPoint.dates().isEmpty(),
+                "the end point was never reached");
+    }
+
+    /** A transport has to be given where the caller names one. */
+    @Test
+    void aMissingTransportIsRefused()
+            throws IOException, OwidException {
+        Owid owid = KeyFixtures.identifier();
+        failureOf(PublicKeyFetch.publicKeyPem(owid, "https", null),
+                OwidException.class,
+                "the key cannot be fetched with no transport");
+        assertEquals(OwidSignatureStatus.KEY_UNAVAILABLE,
+                PublicKeyFetch.verify(owid, "https", ALONE, null).join()
+                        .getStatus(),
+                "a check with no transport is unjudged");
+        assertThrows(IllegalArgumentException.class,
+                () -> new HttpUrlConnectionTransport(null),
+                "the default transport needs an executor");
     }
 
     /**
@@ -315,14 +495,14 @@ class DatedKeyFetchTest {
                 Instant.parse("2026-08-20T00:00:00Z"));
         Owid later = crafted(Version.VERSION3, KeyFixtures.IDENTIFIER_DOMAIN,
                 Instant.parse("2026-09-04T00:00:00Z"));
-        String first = PublicKeyFetch.publicKeyPemAtUrl(
-                endPoint.urlFor(earlier), KeyFixtures.IDENTIFIER_DOMAIN);
-        String second = PublicKeyFetch.publicKeyPemAtUrl(
-                endPoint.urlFor(later), KeyFixtures.IDENTIFIER_DOMAIN);
+        String first = pemAt(endPoint.urlFor(earlier),
+                KeyFixtures.IDENTIFIER_DOMAIN);
+        String second = pemAt(endPoint.urlFor(later),
+                KeyFixtures.IDENTIFIER_DOMAIN);
         assertNotEquals(first, second, "two weeks, two keys");
         assertEquals(2, endPoint.dates().size(), "one request per week");
-        assertEquals(first, PublicKeyFetch.publicKeyPemAtUrl(
-                endPoint.urlFor(earlier), KeyFixtures.IDENTIFIER_DOMAIN),
+        assertEquals(first, pemAt(endPoint.urlFor(earlier),
+                KeyFixtures.IDENTIFIER_DOMAIN),
                 "the held key is the one fetched for that week");
         assertEquals(2, endPoint.dates().size(),
                 "a week already held is not asked for again");
@@ -341,8 +521,12 @@ class DatedKeyFetchTest {
         assertThrows(OwidException.class,
                 () -> PublicKeyFetch.publicKeyUrl(owid, "https"),
                 "a domain carrying a path and a query is refused");
+        failureOf(PublicKeyFetch.publicKeyPem(owid, "https"),
+                OwidException.class,
+                "a URL that cannot be built fails the fetch");
         assertEquals(OwidSignatureStatus.KEY_UNAVAILABLE,
-                PublicKeyFetch.verify(owid, "https", ALONE).getStatus(),
+                PublicKeyFetch.verify(owid, "https", ALONE).join()
+                        .getStatus(),
                 "a URL that cannot be built leaves the signature unjudged");
     }
 
@@ -361,7 +545,8 @@ class DatedKeyFetchTest {
     void aSchemeThatIsNotHttpIsKeyUnavailable() throws OwidException {
         assertEquals(OwidSignatureStatus.KEY_UNAVAILABLE,
                 PublicKeyFetch.verify(
-                        KeyFixtures.identifier(), "mailto", ALONE).getStatus(),
+                        KeyFixtures.identifier(), "mailto", ALONE).join()
+                        .getStatus(),
                 "a scheme that fetches no key leaves the signature unjudged");
     }
 
@@ -375,6 +560,25 @@ class DatedKeyFetchTest {
                 () -> PublicKeyFetch.publicKeyUrl(
                         KeyFixtures.identifier(), "  "),
                 "there is no URL without a scheme");
+    }
+
+    /**
+     * A transport that answers only when the test lets it, counting the
+     * requests made of it, so a test can hold two requests in flight
+     * together and say how many reached the wire.
+     */
+    private static final class HeldTransport implements PublicKeyTransport {
+
+        final AtomicInteger requests = new AtomicInteger();
+
+        final CompletableFuture<String> answer =
+                new CompletableFuture<String>();
+
+        @Override
+        public CompletableFuture<String> fetch(String url, String domain) {
+            requests.incrementAndGet();
+            return answer;
+        }
     }
 
     /**
