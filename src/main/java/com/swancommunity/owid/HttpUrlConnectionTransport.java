@@ -20,6 +20,8 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
+import java.net.URI;
+import java.net.URISyntaxException;
 import java.net.URL;
 import java.net.URLConnection;
 import java.nio.charset.StandardCharsets;
@@ -140,7 +142,10 @@ public final class HttpUrlConnectionTransport implements PublicKeyTransport {
             throws PublicKeyFetchException {
         HttpURLConnection connection = null;
         try {
-            URLConnection opened = new URL(url).openConnection();
+            // URI then toURL rather than the URL(String) constructor,
+            // which is deprecated from Java 20 and would fail a consumer
+            // compiling this source with warnings as errors.
+            URLConnection opened = new URI(url).toURL().openConnection();
             if ((opened instanceof HttpURLConnection) == false) {
                 // A scheme the caller chose that does not make an HTTP
                 // request, such as file. Reported as a key that could not be
@@ -186,10 +191,10 @@ public final class HttpUrlConnectionTransport implements PublicKeyTransport {
             } finally {
                 body.close();
             }
-        } catch (IOException e) {
-            // A refused connection, a name that does not resolve and a
-            // timeout all arrive here, and all of them mean the signature
-            // was never examined.
+        } catch (IOException | URISyntaxException e) {
+            // A refused connection, a name that does not resolve, a
+            // timeout and a url that will not parse all arrive here, and
+            // all of them mean the signature was never examined.
             throw new PublicKeyFetchException(
                     "the public key could not be fetched from domain "
                             + quoted(domain),
