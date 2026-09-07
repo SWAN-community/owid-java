@@ -167,16 +167,24 @@ until the next key starts, so a key the creator answers with at two minutes was
 in force at every minute between them, and an identifier dated inside a
 confirmed span is verified without a request whichever minute it carries. One
 dated outside every span is asked about, which widens the span when the same
-key comes back. One dated within fifteen minutes of now, or later, is asked
-about every time and never held, because a creator whose clock differs from
-this one's may have read that minute as its present rather than as the minute
-named. Live identifiers therefore cost one request per minute per creator, as
-they always did, and older ones cost none. At most 1024 keys are held across
-every creator before the store is emptied and filled again, and `clearCache`
-empties it on demand, which is how a long running process drops a key it has
-learned it should no longer trust. Two requests for the same key made while the
-first is still on its way share one request, and a fetch that fails is not
-held, so the next request asks again.
+key comes back. The creator answers with the key and the moments it is valid
+from and to, so the whole span is held from one answer and an identifier dated
+anywhere in it is verified without a request whatever the clock drift. An
+answer in any other form, the PEM alone among them, is reported as a key that
+cannot be read. A signature that does not verify under the key selected, where
+the identifier is dated within fifteen minutes of the edge of that key's span,
+is checked against the neighbouring key before it is reported as not matching,
+because a creator's signing machines may not agree with its schedule to the
+minute. One dated within fifteen minutes of now, or later, is asked about every
+time and never held, because a creator whose clock differs from this one's may
+have read that minute as its present rather than as the minute named. Live
+identifiers therefore cost one request per minute per creator, as they always
+did, and older ones cost none. At most 1024 keys are held across every creator
+before the store is emptied and filled again, and `clearCache` empties it on
+demand, which is how a long running process drops a key it has learned it
+should no longer trust. Two requests for the same key made while the first is
+still on its way share one request, and a fetch that fails is not held, so the
+next request asks again.
 
 Every method that reaches the network answers with a `CompletableFuture` and
 returns at once. There is no form that waits, so a request thread or an event
@@ -434,6 +442,13 @@ domain, a null payload, or a field that cannot be serialized.
   - Both take an optional `PublicKeyTransport`, and use
     `HttpUrlConnectionTransport` on its shared pool where none is given.
   - `clearCache` empties the keys already fetched.
+  - `Endpoints.publicKeyResponse` and `Endpoints.publicKeyResponseAt` return the
+    JSON body of the public key end point, the key as `publicKeySPKI` with
+    `validFrom` and `validTo`, the UTC moments the key came into force and the
+    next key starts, and `Endpoints.publicKeyAnswer` builds and checks any such
+    answer so a key that cannot be read or a schedule that contradicts itself is
+    refused before it is sent. `PublicKeyResponse` reads and writes the body. The
+    PEM alone as text is no longer a valid answer.
 - `PublicKeyTransport` makes the request and answers with a
   `CompletableFuture` of the body, so a transport over any HTTP client can
   be supplied. It must never follow a redirect and must request the URL

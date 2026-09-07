@@ -29,6 +29,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.lang.reflect.Field;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -36,6 +37,7 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.Executor;
 import java.util.concurrent.RejectedExecutionException;
@@ -297,9 +299,7 @@ class DatedKeyFetchTest {
     /**
      * Key material that arrives but cannot be read is the fault of the key
      * and not of the identifier, so it is reported apart from a signature
-     * that does not match. This is the 30 August 2026 fault, where the key
-     * end points served PEM a strict parser refused and every offline check
-     * against them failed while the keys and the identifiers were both fine.
+     * that does not match. 
      */
     @Test
     void aKeyThatCannotBeReadIsInvalidKey()
@@ -359,7 +359,6 @@ class DatedKeyFetchTest {
         assertEquals(1, held.requests.get(),
                 "the second request joins the first rather than asking "
                         + "again");
-        assertSame(first, second, "both callers hold the same fetch");
         assertFalse(first.isDone(), "nothing has answered yet");
         // The genuine key, fetched through the transport itself rather than
         // through the cache, because the cache holds the fetch still on its
@@ -431,7 +430,8 @@ class DatedKeyFetchTest {
         assertNotEquals(Thread.currentThread(), ran.get(),
                 "the thread that asked is not the one that fetches");
         assertEquals(OwidSignatureStatus.SIGNATURE_VALID,
-                owid.verify(fetch.join(), ALONE).getStatus(),
+                owid.verify(PublicKeyResponse.parse(fetch.join())
+                        .getPublicKeySpki(), ALONE).getStatus(),
                 "the key fetched on the executor verifies the identifier");
     }
 
@@ -635,7 +635,7 @@ class DatedKeyFetchTest {
     @Test
     void aMinuteBetweenTwoConfirmedMinutesIsServedFromTheCache()
             throws IOException, OwidException {
-        KeyEndPoint endPoint = endPoint(KeyEndPoint.Answer.SCHEDULE);
+        KeyEndPoint endPoint = endPoint(KeyEndPoint.Answer.SPANLESS);
         // The week of 31 August 2026, which the fixture identifier was
         // signed in, and which is wholly in the past so the cache reads
         // each minute as itself rather than as now.
@@ -675,7 +675,7 @@ class DatedKeyFetchTest {
     @Test
     void aHundredIdentifiersInOneConfirmedPeriodMakeNoRequest()
             throws IOException, OwidException {
-        KeyEndPoint endPoint = endPoint(KeyEndPoint.Answer.SCHEDULE);
+        KeyEndPoint endPoint = endPoint(KeyEndPoint.Answer.SPANLESS);
         long start = minutes("2026-09-01T00:00:00Z");
         pemAt(urlFor(endPoint, start), KeyFixtures.IDENTIFIER_DOMAIN);
         pemAt(urlFor(endPoint, start + 100), KeyFixtures.IDENTIFIER_DOMAIN);
@@ -697,7 +697,7 @@ class DatedKeyFetchTest {
     @Test
     void aKeyIsNeverServedForAMinuteOutsideItsConfirmedSpan()
             throws IOException, OwidException {
-        KeyEndPoint endPoint = endPoint(KeyEndPoint.Answer.SCHEDULE);
+        KeyEndPoint endPoint = endPoint(KeyEndPoint.Answer.SPANLESS);
         long rotation = minutes("2026-08-31T00:00:00Z");
         long week = 7 * 24 * 60;
         // The start of the week before the rotation and the end of the week
@@ -743,13 +743,11 @@ class DatedKeyFetchTest {
      * A minute within the clock drift allowance of now, or later, is asked
      * about every time and never held, because a creator whose clock differs
      * from this one's may have read it as its present rather than as the
-     * minute named. A minute beyond the allowance is held as usual. Live
-     * identifiers therefore cost one request per minute per creator, as they
-     * always did, and older ones cost none.
+     * minute named. A minute beyond the allowance is held as usual. Live identifiers therefore cost one request per minute per creator and older ones cost none.
      */
     @Test
     void aMinuteWithinTheDriftAllowanceIsNotHeld() throws Exception {
-        KeyEndPoint endPoint = endPoint(KeyEndPoint.Answer.SCHEDULE);
+        KeyEndPoint endPoint = endPoint(KeyEndPoint.Answer.SPANLESS);
         Field field = PublicKeyFetch.class.getDeclaredField(
                 "CLOCK_DRIFT_ALLOWANCE_MINUTES");
         field.setAccessible(true);
@@ -793,11 +791,14 @@ class DatedKeyFetchTest {
         final AtomicInteger requests = new AtomicInteger();
         PublicKeyTransport distinct = (url, domain) -> {
             requests.incrementAndGet();
-            String minute = url.substring(url.indexOf("date=") + 5,
-                    url.indexOf("&format"));
-            return CompletableFuture.completedFuture(
-                    "-----BEGIN PUBLIC KEY-----\n" + minute
-                            + "\n-----END PUBLIC KEY-----\n");
+            try {
+                return CompletableFuture.completedFuture(
+                        Endpoints.publicKeyAnswer(
+                                Crypto.generate().subjectPublicKeyInfo(),
+                                null, null, null));
+            } catch (OwidException e) {
+                throw new IllegalStateException(e);
+            }
         };
         for (int i = 0; i <= maximum; i++) {
             PublicKeyFetch.publicKeyPemAtUrl(
@@ -810,5 +811,227 @@ class DatedKeyFetchTest {
         assertTrue(PublicKeyFetch.cachedKeyCount() <= maximum,
                 "held " + PublicKeyFetch.cachedKeyCount() + " of at most "
                         + maximum);
+    }
+
+    /** A JSON answer for the key alone, as a creator with no schedule sends. */
+    private static String spanless(String pem) throws OwidException {
+        return Endpoints.publicKeyAnswer(pem, null, null, null);
+    }
+
+    /**
+     * An identifier for the domain dated at the moment and signed with the
+     * crypto given, standing for one whose signing machine's clock did not
+     * agree with the creator's schedule to the minute.
+     */
+    private static Owid signedAt(String domain, Instant moment, Crypto crypto)
+            throws OwidException {
+        byte[] payload = "payload".getBytes(StandardCharsets.UTF_8);
+        byte[] data = Owid.dataForCrypto(Version.VERSION3, domain, moment,
+                payload, ALONE);
+        return new Owid(Version.VERSION3, domain, moment, payload,
+                crypto.signByteArray(data));
+    }
+
+    /**
+     * A creator that states the moments the key is valid from and to, which
+     * is what the library's own server side helper answers, has the whole
+     * span held from that one answer, so every other minute of the span is
+     * served without a request.
+     */
+    @Test
+    void aKeyAnsweredWithItsSpanIsHeldForTheWholeSpan()
+            throws IOException, OwidException {
+        KeyEndPoint endPoint = endPoint(KeyEndPoint.Answer.SCHEDULE);
+        String pem = pemAt(urlFor(endPoint, minutes("2026-08-31T00:01:00Z")),
+                KeyFixtures.IDENTIFIER_DOMAIN);
+        for (String moment : new String[] {"2026-09-06T23:59:00Z",
+                "2026-09-03T12:00:00Z", "2026-08-31T00:00:00Z"}) {
+            assertEquals(pem, pemAt(urlFor(endPoint, minutes(moment)),
+                    KeyFixtures.IDENTIFIER_DOMAIN), moment);
+        }
+        assertEquals(1, endPoint.dates().size(),
+                "the whole week was held from one answer");
+        assertEquals(1, PublicKeyFetch.cachedKeyCount());
+        assertNotEquals(pem, pemAt(urlFor(endPoint,
+                minutes("2026-08-30T23:59:00Z")), KeyFixtures.IDENTIFIER_DOMAIN),
+                "the minute before the week is the earlier week's key");
+        pemAt(urlFor(endPoint, minutes("2026-08-24T00:00:00Z")),
+                KeyFixtures.IDENTIFIER_DOMAIN);
+        assertEquals(2, endPoint.dates().size(),
+                "the earlier week was held from its one answer");
+    }
+
+    /**
+     * The drift allowance, which keeps minutes near now out of a cache built
+     * from confirmed minutes, does not apply to a span the creator stated
+     * itself, so live identifiers cost one request per key rather than one
+     * per minute.
+     */
+    @Test
+    void aRecentMinuteIsServedWhereTheCreatorStatedTheSpan()
+            throws IOException, OwidException {
+        KeyEndPoint endPoint = endPoint(KeyEndPoint.Answer.SCHEDULE);
+        Instant now = Instant.now();
+        DatedPublicKey current = KeyFixtures.schedule().keyInForce(now);
+        assumeTrue(current != null
+                && KeyFixtures.schedule().nextStartAfter(current) != null,
+                "the fixture schedule has no key after the one in force now");
+        long started = Io.minutesSinceBase(now);
+        pemAt(urlFor(endPoint, started - 1), KeyFixtures.IDENTIFIER_DOMAIN);
+        pemAt(urlFor(endPoint, started), KeyFixtures.IDENTIFIER_DOMAIN);
+        pemAt(urlFor(endPoint, started - 10), KeyFixtures.IDENTIFIER_DOMAIN);
+        assertEquals(1, endPoint.dates().size(),
+                "the current key was served for every recent minute from one "
+                        + "answer");
+    }
+
+    /**
+     * An identifier dated just after a key started, but signed with the key
+     * before it, verifies, and one dated just before a key started but
+     * signed with it verifies too, because the neighbouring key is tried
+     * when the selected key fails within the drift allowance of the span's
+     * edge. Further from the edge the failure stands. The stand in creator
+     * answers with the library's own server side helper, so the loop between
+     * the two halves of the library is closed.
+     */
+    @Test
+    void aSignatureFailingNearTheEdgeOfASpanIsCheckedAgainstTheNeighbour()
+            throws OwidException {
+        Crypto first = Crypto.generate();
+        Crypto second = Crypto.generate();
+        Crypto third = Crypto.generate();
+        Instant rotation = Instant.parse("2026-08-31T00:00:00Z");
+        Duration week = Duration.ofDays(7);
+        final PublicKeySchedule schedule = PublicKeySchedule.of(Arrays.asList(
+                DatedPublicKey.of(rotation.minus(week),
+                        first.subjectPublicKeyInfo()),
+                DatedPublicKey.of(rotation, second.subjectPublicKeyInfo()),
+                DatedPublicKey.of(rotation.plus(week),
+                        third.subjectPublicKeyInfo())));
+        final List<String> requests = new ArrayList<String>();
+        PublicKeyTransport creator = (url, domain) -> {
+            requests.add(url);
+            String date = null;
+            int at = url.indexOf("date=");
+            if (at >= 0) {
+                date = url.substring(at + 5, url.indexOf('&', at));
+            }
+            try {
+                Endpoints.Response response = Endpoints.publicKeyResponseAt(
+                        schedule, "pkcs", date, Instant.now());
+                return CompletableFuture.completedFuture(response.getBody());
+            } catch (OwidException e) {
+                throw new IllegalStateException(e);
+            }
+        };
+        Owid late = signedAt("creator.test", rotation.plus(Duration.ofMinutes(5)),
+                first);
+        assertEquals(OwidSignatureStatus.SIGNATURE_VALID,
+                statusOf(late, creator),
+                "signed with the earlier key just after the rotation");
+        assertEquals(2, requests.size(),
+                "the selected key and then the earlier key were asked for");
+        Owid early = signedAt("creator.test",
+                rotation.minus(Duration.ofMinutes(5)), second);
+        assertEquals(OwidSignatureStatus.SIGNATURE_VALID,
+                statusOf(early, creator),
+                "signed with the later key just before the rotation");
+        assertEquals(2, requests.size(), "both keys are held with their spans");
+        Owid far = signedAt("creator.test", rotation.plus(Duration.ofMinutes(20)),
+                first);
+        assertEquals(OwidSignatureStatus.SIGNATURE_INVALID,
+                statusOf(far, creator), "well inside the later key's span");
+        assertEquals(2, requests.size(),
+                "the neighbouring minutes lie inside the spans held");
+        Owid genuine = signedAt("creator.test", rotation.plus(Duration.ofDays(3)),
+                second);
+        assertEquals(OwidSignatureStatus.SIGNATURE_VALID,
+                statusOf(genuine, creator));
+        Owid forged = signedAt("creator.test", rotation.plus(Duration.ofDays(3)),
+                third);
+        assertEquals(OwidSignatureStatus.SIGNATURE_INVALID,
+                statusOf(forged, creator),
+                "signed with a key not in force at its date");
+    }
+
+    /** The status of an OWID checked through the transport given. */
+    private static OwidSignatureStatus statusOf(Owid owid,
+            PublicKeyTransport transport) throws OwidException {
+        return PublicKeyFetch.verifyAtUrl(owid,
+                PublicKeyFetch.publicKeyUrl(owid, "https"), ALONE, transport)
+                .join().getStatus();
+    }
+
+    /**
+     * The PEM alone as text is reported as a key this library cannot read
+     * rather than used, and so is a span that ends before it starts.
+     */
+    @Test
+    void anAnswerThatIsNotTheJsonFormIsAKeyThatCannotBeRead()
+            throws IOException, OwidException {
+        Owid owid = KeyFixtures.identifier();
+        KeyEndPoint endPoint = endPoint(KeyEndPoint.Answer.PEM_ONLY);
+        assertEquals(OwidSignatureStatus.INVALID_KEY,
+                statusAt(owid, endPoint.urlFor(owid)));
+        final String pem = KeyFixtures.schedule().getKeys().get(0).getPublicKeyPem();
+        PublicKeyTransport contradictory = (url, domain) ->
+                CompletableFuture.completedFuture(PublicKeyResponse.of(pem,
+                        Instant.parse("2026-08-31T00:00:00Z"),
+                        Instant.parse("2026-08-24T00:00:00Z")).toJson());
+        assertEquals(OwidSignatureStatus.INVALID_KEY,
+                statusOf(owid, contradictory));
+    }
+
+    /**
+     * Threads verifying the same OWID at the same moment make one request for
+     * its key between them, and every one of them gets the answer. The stand
+     * in transport holds its answer until every thread has asked, so all of
+     * them are in flight together against one request.
+     */
+    @Test
+    void manyThreadsVerifyingOneOwidTogetherMakeOneRequest()
+            throws Exception {
+        final int callers = 32;
+        final Owid owid = KeyFixtures.identifier();
+        final String answer = spanless(
+                KeyFixtures.schedule().keyFor(owid).getPublicKeyPem());
+        final AtomicInteger requests = new AtomicInteger();
+        final CompletableFuture<String> held = new CompletableFuture<String>();
+        PublicKeyTransport transport = (url, domain) -> {
+            requests.incrementAndGet();
+            return held;
+        };
+        final String url = PublicKeyFetch.publicKeyUrl(owid, "https");
+        final CyclicBarrier start = new CyclicBarrier(callers + 1);
+        final List<OwidSignatureStatus> statuses = Collections.synchronizedList(
+                new ArrayList<OwidSignatureStatus>());
+        List<Thread> threads = new ArrayList<Thread>();
+        for (int i = 0; i < callers; i++) {
+            Thread thread = new Thread(() -> {
+                try {
+                    start.await();
+                    statuses.add(PublicKeyFetch.verifyAtUrl(owid, url, ALONE,
+                            transport).join().getStatus());
+                } catch (Exception e) {
+                    throw new IllegalStateException(e);
+                }
+            });
+            thread.start();
+            threads.add(thread);
+        }
+        // Every thread goes at the same moment, and the transport only
+        // answers once they are all waiting on it.
+        start.await();
+        Thread.sleep(200);
+        held.complete(answer);
+        for (Thread thread : threads) {
+            thread.join(30_000);
+        }
+        assertEquals(callers, statuses.size(), "every thread finished");
+        for (OwidSignatureStatus status : statuses) {
+            assertEquals(OwidSignatureStatus.SIGNATURE_VALID, status,
+                    "every thread verified the OWID");
+        }
+        assertEquals(1, requests.get(), "one request for " + callers + " threads");
     }
 }

@@ -71,52 +71,81 @@ public final class PublicKeyFetch {
 
     /**
      * How far a creator's clock may run ahead of or behind this one's, in
-     * minutes. A minute closer to now than this, or later, is asked about
-     * rather than served from the cache, and is not held.
+     * minutes.
      *
-     * <p>A creator reads a date later than its own now as now, and answers
-     * with the key in force now. Within this window this process cannot tell
-     * whether the creator read the minute as its past or as its present, so
-     * the answer says nothing certain about the minute. An identifier signed
-     * just after a rotation by a creator whose clock runs ahead would
-     * otherwise be served the old key from a span confirmed up to now, and
-     * would read as not matching until this clock caught up. Identifiers
-     * dated within the window are asked about once per minute per creator,
-     * as they always were, and every older identifier is served from the
-     * spans.</p>
+     * <p>It is used in two places. A creator that does not state the span of
+     * the key it answers with reads a date later than its own now as now, so
+     * within this window of now this process cannot tell whether the creator
+     * read the minute as its past or as its present, and nothing learned from
+     * such an answer is held or served. And a creator's signing machines may
+     * not agree with the creator's own schedule to the minute, so an
+     * identifier dated within this window of a key's edge that does not
+     * verify under that key is checked against the neighbouring key before
+     * it is reported as not matching.</p>
      */
     private static final long CLOCK_DRIFT_ALLOWANCE_MINUTES = 15;
 
-    /** The minute {@link #minuteOf} answers where the cache must not be used. */
-    private static final long NOT_HELD = -1;
+    /** The minute {@link #minuteOf} answers where the URL names none. */
+    private static final long NO_MINUTE = -1;
 
     /**
-     * One key a creator has answered with, and the span of minutes the
-     * creator has confirmed it was in force for.
+     * One key a creator has answered with, and the span of minutes the key
+     * is known to cover.
      *
      * <p>A creator's key is in force from the start of its period until the
      * next key starts, so a key the creator confirms at two minutes was in
-     * force at every minute between them. The span grows as the creator
-     * confirms the same key for more minutes, and an identifier dated inside
-     * it is verified without a request.</p>
+     * force at every minute between them. Where the creator stated the span
+     * in its answer the span is explicit and complete, and an identifier
+     * dated anywhere inside it is verified without a request. Otherwise the
+     * span grows as the creator confirms the same key for more minutes.</p>
      */
     private static final class HeldKey {
         /** The key in PEM form, as the creator served it. */
         final String pem;
-        /** The earliest minute the creator has confirmed the key for. */
+        /** The earliest minute the key is known to cover. */
         long first;
-        /** The latest minute the creator has confirmed the key for. */
+        /** The latest minute the key is known to cover. */
         long last;
+        /** Whether the creator stated the whole span itself. */
+        boolean explicit;
 
-        HeldKey(String pem, long minute) {
+        HeldKey(String pem, long first, long last, boolean explicit) {
             this.pem = pem;
-            this.first = minute;
-            this.last = minute;
+            this.first = first;
+            this.last = last;
+            this.explicit = explicit;
         }
 
-        /** Whether the minute lies within the confirmed span. */
+        /** Whether the minute lies within the known span. */
         boolean covers(long minute) {
             return first <= minute && minute <= last;
+        }
+    }
+
+    /**
+     * What the cache or a fetch answers with. The key, and where it is known,
+     * the span of minutes the key covers, so that a caller can tell whether
+     * the identifier it is checking sits near the edge of the span.
+     */
+    private static final class KeyAnswer {
+        final String pem;
+        final long first;
+        final long last;
+        final boolean known;
+
+        KeyAnswer(String pem, long first, long last, boolean known) {
+            this.pem = pem;
+            this.first = first;
+            this.last = last;
+            this.known = known;
+        }
+
+        static KeyAnswer unknown(String pem) {
+            return new KeyAnswer(pem, 0, 0, false);
+        }
+
+        boolean covers(long minute) {
+            return known && first <= minute && minute <= last;
         }
     }
 
@@ -136,10 +165,7 @@ public final class PublicKeyFetch {
      * many identifiers does not mean repeating requests to another
      * processor. The key URL carries the date of the identifier being
      * verified, in minutes, and a creator's key changes on the order of a
-     * week. Keyed by the whole URL, as this cache once was, two identifiers
-     * signed a minute apart never shared an entry, so a hundred identifiers
-     * over a hundred minutes made a hundred requests for one key. Keyed by
-     * end point and span, an identifier dated between two minutes the
+     * week. Keyed by end point and span rather than by the whole URL, an identifier dated between two minutes the
      * creator has already answered for is verified without a request.</p>
      */
     private static final Map<String, List<HeldKey>> CACHE =
@@ -155,8 +181,8 @@ public final class PublicKeyFetch {
      * request ends, whatever the outcome, so a failure is never handed to a
      * later caller and an outage is never remembered.
      */
-    private static final Map<String, CompletableFuture<String>> IN_FLIGHT =
-            new HashMap<String, CompletableFuture<String>>();
+    private static final Map<String, CompletableFuture<KeyAnswer>> IN_FLIGHT =
+            new HashMap<String, CompletableFuture<KeyAnswer>>();
 
     /** The transport used where the caller names none. */
     private static final PublicKeyTransport DEFAULT_TRANSPORT =
@@ -273,6 +299,7 @@ public final class PublicKeyFetch {
      * @param scheme the scheme to use, normally {@code https}
      * @param others the other OWIDs that were signed together with this one,
      *               in the same order as when signed
+     *
      * @return the outcome of the check, through a future
      */
     public static CompletableFuture<OwidVerificationResult> verify(Owid owid,
@@ -301,6 +328,7 @@ public final class PublicKeyFetch {
      * @param scheme    the scheme to use, normally {@code https}
      * @param others    the other OWIDs that were signed together with this
      *                  one, in the same order as when signed
+     *
      * @param transport the transport to make the request with
      * @return the outcome of the check, through a future
      */
@@ -348,48 +376,119 @@ public final class PublicKeyFetch {
      * than against a near copy of the fetch.
      */
     static CompletableFuture<OwidVerificationResult> verifyAtUrl(
-            final Owid owid, String url, final List<Owid> others,
-            PublicKeyTransport transport) {
-        return publicKeyPemAtUrl(url, owid.getDomain(), transport)
-                .handle((pem, failure) -> {
+            final Owid owid, final String url, final List<Owid> others,
+            final PublicKeyTransport transport) {
+        return keyAtUrl(url, owid.getDomain(), transport)
+                .handle((answer, failure) -> {
                     if (failure != null) {
-                        return OwidVerificationResult.of(statusOf(failure));
+                        return CompletableFuture.completedFuture(
+                                OwidVerificationResult.of(statusOf(failure)));
                     }
-                    return owid.verify(pem, others);
-                });
+                    OwidVerificationResult result = owid.verify(answer.pem,
+                            others);
+                    if (result.getStatus()
+                            != OwidSignatureStatus.SIGNATURE_INVALID) {
+                        return CompletableFuture.completedFuture(result);
+                    }
+                    return neighbourVerifies(owid, url, answer, others,
+                            transport).thenApply(verified -> verified
+                                    ? OwidVerificationResult.of(
+                                            OwidSignatureStatus.SIGNATURE_VALID)
+                                    : result);
+                })
+                .thenCompose(future -> future);
     }
 
     /**
-     * Fetches the PEM at the URL. Answered from the cache where the creator
-     * has already confirmed a key for the minute the URL names, from a
-     * request already under way for the same URL where there is one, and
-     * otherwise through the transport.
+     * Whether a key neighbouring the one the OWID's own minute selected
+     * verifies the signature instead.
+     *
+     * <p>A creator's signing machines may not agree with its own schedule to
+     * the minute, so an identifier dated just after a key started may have
+     * been signed with the key before it, and one dated just before may have
+     * been signed with the key after. Where the signature does not verify
+     * under the key selected and the OWID's minute is within the clock drift
+     * allowance of the edge of the span that key is known to cover, the key
+     * for the minute just beyond that edge is asked for and tried. A key
+     * already known to cover the neighbouring minute is not asked for again,
+     * and a neighbour that turns out to be the same key is not tried again.
+     * This costs at most two more requests, and only for a signature that
+     * has already failed.</p>
+     */
+    private static CompletableFuture<Boolean> neighbourVerifies(
+            final Owid owid, String url, final KeyAnswer tried,
+            final List<Owid> others, PublicKeyTransport transport) {
+        long minute = Io.minutesSinceBase(owid.getDate());
+        if (minute < 0 || (tried.known && tried.covers(minute) == false)) {
+            // Either the OWID's minute cannot be counted, or the key tried
+            // was never in force at that minute, so the OWID is not near an
+            // edge of that key's span.
+            return CompletableFuture.completedFuture(false);
+        }
+        final String endPoint = endPointOf(url);
+        CompletableFuture<Boolean> verified =
+                CompletableFuture.completedFuture(false);
+        for (final long at : new long[] {
+                minute - CLOCK_DRIFT_ALLOWANCE_MINUTES,
+                minute + CLOCK_DRIFT_ALLOWANCE_MINUTES}) {
+            if (at < 0 || at > 0xFFFFFFFFL || tried.covers(at)) {
+                continue;
+            }
+            verified = verified.thenCompose(already -> {
+                if (already) {
+                    return CompletableFuture.completedFuture(true);
+                }
+                return keyAtUrl(endPoint + "?date=" + at + "&format=pkcs",
+                        owid.getDomain(), transport)
+                        .handle((neighbour, failure) -> failure == null
+                                && neighbour.pem.equals(tried.pem) == false
+                                && owid.verify(neighbour.pem, others).getStatus()
+                                        == OwidSignatureStatus.SIGNATURE_VALID);
+            });
+        }
+        return verified;
+    }
+
+    /**
+     * Fetches the PEM at the URL. See {@link #keyAtUrl}.
+     */
+    static CompletableFuture<String> publicKeyPemAtUrl(String url,
+            String domain, PublicKeyTransport transport) {
+        return keyAtUrl(url, domain, transport).thenApply(answer -> answer.pem);
+    }
+
+    /**
+     * Fetches the key the URL asks for, with the span it is known to cover.
+     * Answered from the cache where a held key is known to cover the minute
+     * the URL names, from a request already under way for the same URL where
+     * there is one, and otherwise through the transport. The creator's
+     * answer states the moments the key is valid from and to, so the whole
+     * span is held from that one answer.
      *
      * <p>The future held for a request under way is this class's own rather
      * than the transport's, so that the transport's completion can be
-     * watched, the key held against the minute it was asked for, and a
-     * failure forgotten, all before the callers waiting are answered.</p>
+     * watched, the answer read and held, and a failure forgotten, all before
+     * the callers waiting are answered.</p>
      */
-    static CompletableFuture<String> publicKeyPemAtUrl(final String url,
-            String domain, PublicKeyTransport transport) {
+    static CompletableFuture<KeyAnswer> keyAtUrl(final String url,
+            final String domain, PublicKeyTransport transport) {
         if (transport == null) {
             return failed(new OwidException("the transport is missing"));
         }
         final String endPoint = endPointOf(url);
-        final long minute = minuteOf(url);
-        final CompletableFuture<String> fetch;
+        final CompletableFuture<KeyAnswer> fetch;
         synchronized (LOCK) {
-            String pem = minute == NOT_HELD ? null : heldPem(endPoint, minute);
-            if (pem != null) {
-                return CompletableFuture.completedFuture(pem);
-            }
-            CompletableFuture<String> held = IN_FLIGHT.get(url);
+            KeyAnswer held = heldFor(endPoint, url);
             if (held != null) {
+                return CompletableFuture.completedFuture(held);
+            }
+            CompletableFuture<KeyAnswer> shared = IN_FLIGHT.get(url);
+            if (shared != null) {
                 // Another caller asked for the same key and its fetch is
                 // the one both callers share.
-                return held;
+                return shared;
             }
-            fetch = new CompletableFuture<String>();
+            fetch = new CompletableFuture<KeyAnswer>();
             IN_FLIGHT.put(url, fetch);
         }
         CompletableFuture<String> started;
@@ -407,18 +506,22 @@ public final class PublicKeyFetch {
                             + "'",
                     OwidSignatureStatus.KEY_UNAVAILABLE, domain, 0, null));
         }
-        started.whenComplete((pem, failure) -> {
-            if (failure == null && pem != null) {
-                // Held before the callers are answered, so a caller arriving
-                // between the two finds the key rather than starting a
-                // request of its own.
-                synchronized (LOCK) {
-                    if (minute != NOT_HELD) {
-                        hold(endPoint, minute, pem);
+        started.whenComplete((body, failure) -> {
+            if (failure == null && body != null) {
+                KeyAnswer answer;
+                try {
+                    answer = readAnswer(body, domain, endPoint, url);
+                } catch (PublicKeyFetchException unreadable) {
+                    synchronized (LOCK) {
+                        forget(url, fetch);
                     }
+                    fetch.completeExceptionally(unreadable);
+                    return;
+                }
+                synchronized (LOCK) {
                     forget(url, fetch);
                 }
-                fetch.complete(pem);
+                fetch.complete(answer);
                 return;
             }
             synchronized (LOCK) {
@@ -436,12 +539,52 @@ public final class PublicKeyFetch {
     }
 
     /**
+     * Reads a public key answer and holds the key it carries against the
+     * span it states, or against the minute asked about where it states
+     * none. An answer that is not the JSON form the specification requires,
+     * the PEM alone among the other forms, or that fails the checks a
+     * creator applies before sending it, is reported as a key that cannot be
+     * read.
+     */
+    private static KeyAnswer readAnswer(String body, String domain,
+            String endPoint, String url) throws PublicKeyFetchException {
+        PublicKeyResponse answer;
+        try {
+            answer = PublicKeyResponse.parse(body);
+            answer.validate(null);
+        } catch (OwidException e) {
+            throw new PublicKeyFetchException(
+                    "domain " + quoted(domain) + " answered with a public key "
+                            + "answer that is not valid: " + e.getMessage(),
+                    OwidSignatureStatus.INVALID_KEY, domain, 0, e);
+        }
+        synchronized (LOCK) {
+            return hold(endPoint, url, answer.getPublicKeySpki(),
+                    minutesOrNull(answer.getValidFrom()),
+                    minutesOrNull(answer.getValidTo()));
+        }
+    }
+
+    /** The moment as minutes since the base date, or null. */
+    private static Long minutesOrNull(Instant moment) {
+        if (moment == null) {
+            return null;
+        }
+        long minutes = Io.minutesSinceBase(moment);
+        return minutes < 0 ? null : Long.valueOf(minutes);
+    }
+
+    private static String quoted(String value) {
+        return "'" + value + "'";
+    }
+
+    /**
      * Removes the request from those under way. Only this request is
      * removed, never whatever replaced it after the cache was emptied and a
      * fresh request started for the same URL in the meantime. Called under
      * the lock.
      */
-    private static void forget(String url, CompletableFuture<String> fetch) {
+    private static void forget(String url, CompletableFuture<KeyAnswer> fetch) {
         if (IN_FLIGHT.get(url) == fetch) {
             IN_FLIGHT.remove(url);
         }
@@ -457,49 +600,56 @@ public final class PublicKeyFetch {
     }
 
     /**
-     * The minute the cache reads the URL as asking about, or
-     * {@link #NOT_HELD} where the cache must not be used for the request.
-     *
-     * <p>The date parameter where the URL carries one and it is at least
-     * {@link #CLOCK_DRIFT_ALLOWANCE_MINUTES} behind now. A request without a
-     * date asks for the key in force now, and one dated within the
-     * allowance, or later, may be read by the creator as its present rather
-     * than as the minute named, so neither is served from the cache nor held
-     * in it.</p>
+     * The minute the URL asks about, or {@link #NO_MINUTE} where it names
+     * none.
      */
     private static long minuteOf(String url) {
-        long now = Io.minutesSinceBase(Instant.now());
         int query = url.indexOf('?');
         if (query < 0) {
-            return NOT_HELD;
+            return NO_MINUTE;
         }
         for (String pair : url.substring(query + 1).split("&")) {
             if (pair.startsWith("date=")) {
                 try {
                     long minute = Long.parseLong(pair.substring(5));
-                    if (minute >= 0
-                            && minute <= now - CLOCK_DRIFT_ALLOWANCE_MINUTES) {
-                        return minute;
-                    }
+                    return minute < 0 ? NO_MINUTE : minute;
                 } catch (NumberFormatException notANumber) {
-                    // Not a count of minutes, so nothing to hold against.
+                    return NO_MINUTE;
                 }
-                return NOT_HELD;
             }
         }
-        return NOT_HELD;
+        return NO_MINUTE;
     }
 
     /**
-     * The key held for the end point whose confirmed span covers the minute,
-     * or null where no held key does. Called under the lock.
+     * Whether the minute lies within the clock drift allowance of now or
+     * later, which is a minute a creator that does not state its spans may
+     * have read as its present rather than as the minute named.
      */
-    private static String heldPem(String endPoint, long minute) {
+    private static boolean recent(long minute) {
+        return minute > Io.minutesSinceBase(Instant.now())
+                - CLOCK_DRIFT_ALLOWANCE_MINUTES;
+    }
+
+    /**
+     * The key held for the end point that is known to cover the minute the
+     * URL asks about, or null where none is. Called under the lock.
+     *
+     * <p>A minute within the drift allowance of now is only served where the
+     * creator itself stated the span, because a span confirmed minute by
+     * minute says nothing certain about such a minute.</p>
+     */
+    private static KeyAnswer heldFor(String endPoint, String url) {
+        long minute = minuteOf(url);
+        if (minute == NO_MINUTE) {
+            return null;
+        }
         List<HeldKey> keys = CACHE.get(endPoint);
         if (keys != null) {
+            boolean recent = recent(minute);
             for (HeldKey key : keys) {
-                if (key.covers(minute)) {
-                    return key.pem;
+                if (key.covers(minute) && (key.explicit || recent == false)) {
+                    return new KeyAnswer(key.pem, key.first, key.last, true);
                 }
             }
         }
@@ -507,21 +657,58 @@ public final class PublicKeyFetch {
     }
 
     /**
-     * Records that the creator answered the minute with the key. Called
-     * under the lock.
+     * Records the creator's answer to the URL, being the key and, where the
+     * creator stated it, the span the key covers as the minute it came into
+     * force and the minute the next key starts. Returns the key with the span
+     * it is now known to cover. Called under the lock.
      *
-     * <p>A key already held for the end point has its span widened to take
-     * in the minute. A key not held before is added, emptying the cache
-     * first when it is full, because the domains and dates asked about come
-     * from the identifiers presented to this process and the cache must not
-     * grow on their input.</p>
+     * <p>With both the start and the end the whole span is held as the
+     * creator's own statement. With the start alone the key is held from the
+     * start up to the drift allowance behind now, because no later key can
+     * have started before then. With neither the minute asked about is held
+     * on its own, as long as it is not within the drift allowance of now. A
+     * key already held for the end point has its span widened to take in the
+     * new one. A key not held before is added, emptying the cache first when
+     * it is full, because the cache must not grow on the input of whoever
+     * presents the identifiers.</p>
      */
-    private static void hold(String endPoint, long minute, String pem) {
+    private static KeyAnswer hold(String endPoint, String url, String pem,
+            Long start, Long end) {
+        long minute = minuteOf(url);
+        long first;
+        long last;
+        boolean explicit = false;
+        if (start != null && end != null && end > start) {
+            first = start;
+            last = end - 1;
+            explicit = true;
+        } else if (start != null) {
+            first = start;
+            last = Math.max(start, Io.minutesSinceBase(Instant.now())
+                    - CLOCK_DRIFT_ALLOWANCE_MINUTES);
+        } else if (minute != NO_MINUTE && recent(minute) == false) {
+            first = minute;
+            last = minute;
+        } else {
+            return KeyAnswer.unknown(pem);
+        }
         List<HeldKey> keys = CACHE.get(endPoint);
         if (keys != null) {
             for (HeldKey key : keys) {
-                if (key.pem.equals(pem) && widen(keys, key, minute)) {
-                    return;
+                if (key.pem.equals(pem)) {
+                    if (widen(keys, key, first, last)) {
+                        key.explicit = key.explicit || explicit;
+                        return new KeyAnswer(pem, key.first, key.last, true);
+                    }
+                    // The creator has answered with another key inside this
+                    // span before, which it does not do unless it went back
+                    // to a key it had left. Nothing more is held about it.
+                    return KeyAnswer.unknown(pem);
+                }
+            }
+            for (HeldKey other : keys) {
+                if (other.last >= first && other.first <= last) {
+                    return KeyAnswer.unknown(pem);
                 }
             }
         }
@@ -534,37 +721,31 @@ public final class PublicKeyFetch {
             keys = new ArrayList<HeldKey>();
             CACHE.put(endPoint, keys);
         }
-        keys.add(new HeldKey(pem, minute));
+        keys.add(new HeldKey(pem, first, last, explicit));
         heldKeys++;
+        return new KeyAnswer(pem, first, last, true);
     }
 
     /**
-     * Widens the span of a held key to take in the minute, and says whether
-     * the minute is now within it.
+     * Widens the span of a held key to take in the span given, and says
+     * whether it did.
      *
      * <p>The span is not widened across a minute the creator has answered
      * with another key for, because that would mean the creator had gone
      * back to a key it had left, and the minutes between the two spans are
-     * then not this key's to claim. The key is held again as a separate span
-     * instead.</p>
+     * then not this key's to claim.</p>
      */
-    private static boolean widen(List<HeldKey> keys, HeldKey key,
-            long minute) {
-        if (key.covers(minute)) {
-            return true;
-        }
-        long from = Math.min(minute, key.first);
-        long to = Math.max(minute, key.last);
+    private static boolean widen(List<HeldKey> keys, HeldKey key, long first,
+            long last) {
+        first = Math.min(first, key.first);
+        last = Math.max(last, key.last);
         for (HeldKey other : keys) {
-            if (other != key && other.last > from && other.first < to) {
+            if (other != key && other.last >= first && other.first <= last) {
                 return false;
             }
         }
-        if (minute < key.first) {
-            key.first = minute;
-        } else {
-            key.last = minute;
-        }
+        key.first = first;
+        key.last = last;
         return true;
     }
 

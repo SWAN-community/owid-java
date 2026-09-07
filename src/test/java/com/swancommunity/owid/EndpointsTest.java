@@ -18,6 +18,7 @@ package com.swancommunity.owid;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import org.junit.jupiter.api.Test;
@@ -61,8 +62,11 @@ class EndpointsTest {
         Creator creator = newCreator();
         for (String format : new String[] {"spki", "pkcs"}) {
             String body = Endpoints.publicKeyResponse(creator, format);
-            assertTrue(body.contains("BEGIN PUBLIC KEY"),
+            PublicKeyResponse answer = PublicKeyResponse.parse(body);
+            assertTrue(answer.getPublicKeySpki().contains("BEGIN PUBLIC KEY"),
                     "should return the PEM for format " + format);
+            assertNull(answer.getValidFrom(), "a single key has no schedule");
+            assertNull(answer.getValidTo());
         }
         assertThrows(OwidException.class,
                 () -> Endpoints.publicKeyResponse(creator, "other"),
