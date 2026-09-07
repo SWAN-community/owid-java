@@ -22,9 +22,10 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
- * The JSON body of the public key end point. It carries the key together with
- * the moments it is valid from and to, in UTC, so a client holds the key for
- * the whole span from one answer rather than asking again for every minute.
+ * The JSON body of the public key end point. It carries the key, the
+ * encoding the key is in, and the moments it is valid from and to, in UTC,
+ * so a client holds the key for the whole span from one answer rather than
+ * asking again for every minute.
  *
  * <p>{@code validFrom} is null where the creator has a single key and no
  * schedule, and {@code validTo} is null where no later key has been
@@ -34,39 +35,57 @@ import java.util.Map;
  * a client then has to refuse.</p>
  *
  * <p>Only the JDK is used, so the library keeps its promise of no runtime
- * dependencies. The answer is a flat object of three fields, each a string or
+ * dependencies. The answer is a flat object of four fields, each a string or
  * null, which is all the reading and writing here supports.</p>
  */
 public final class PublicKeyResponse {
 
-    private final String publicKeySpki;
+    /**
+     * The one encoding of the key this library reads and writes, a Subject
+     * Public Key Info PEM. A request that asks for no format is answered in
+     * this one.
+     */
+    public static final String SPKI_FORMAT = "spki";
+
+    private final String format;
+    private final String publicKey;
     private final Instant validFrom;
     private final Instant validTo;
 
-    private PublicKeyResponse(String publicKeySpki, Instant validFrom,
-            Instant validTo) {
-        this.publicKeySpki = publicKeySpki;
+    private PublicKeyResponse(String format, String publicKey,
+            Instant validFrom, Instant validTo) {
+        this.format = format;
+        this.publicKey = publicKey;
         this.validFrom = validFrom;
         this.validTo = validTo;
     }
 
     /**
-     * An answer for the key and the moments it is valid from and to, either
-     * of which may be null.
+     * An answer for the key in the one format this library writes and the
+     * moments it is valid from and to, either of which may be null.
      *
-     * @param publicKeySpki the key in PEM form
-     * @param validFrom     the UTC moment the key came into force, or null
-     * @param validTo       the UTC moment the next key starts, or null
+     * @param publicKey the key as a Subject Public Key Info PEM
+     * @param validFrom the UTC moment the key came into force, or null
+     * @param validTo   the UTC moment the next key starts, or null
      * @return the answer, not yet checked
      */
-    public static PublicKeyResponse of(String publicKeySpki, Instant validFrom,
+    public static PublicKeyResponse of(String publicKey, Instant validFrom,
             Instant validTo) {
-        return new PublicKeyResponse(publicKeySpki, validFrom, validTo);
+        return new PublicKeyResponse(SPKI_FORMAT, publicKey, validFrom,
+                validTo);
     }
 
-    /** The key in PEM form. */
-    public String getPublicKeySpki() {
-        return publicKeySpki;
+    /**
+     * The encoding of the key, which is {@link #SPKI_FORMAT} for any answer
+     * this library can read.
+     */
+    public String getFormat() {
+        return format;
+    }
+
+    /** The public key in the encoding {@link #getFormat()} names. */
+    public String getPublicKey() {
+        return publicKey;
     }
 
     /** The UTC moment the key came into force, or null where not known. */
@@ -81,20 +100,25 @@ public final class PublicKeyResponse {
 
     /**
      * Checks the answer the way both the creator that sends it and the client
-     * that reads it must. The key must be a public key this library can read,
-     * a key valid to a moment must be valid from an earlier one, and where the
-     * moment asked about is known the key must have come into force by then
-     * and, if it has an end, not have ended.
+     * that reads it must. The format must be the one this library reads and
+     * the key must be a public key in it, a key valid to a moment must be
+     * valid from an earlier one, and where the moment asked about is known
+     * the key must have come into force by then and, if it has an end, not
+     * have ended.
      *
      * @param asked the moment asked about, or null where it is not known
      * @throws OwidException if the answer is not valid
      */
     public void validate(Instant asked) throws OwidException {
-        if (publicKeySpki == null || publicKeySpki.trim().isEmpty()) {
+        if (SPKI_FORMAT.equals(format) == false) {
+            throw new OwidException("the public key answer states a format "
+                    + "this library does not read");
+        }
+        if (publicKey == null || publicKey.trim().isEmpty()) {
             throw new OwidException("the public key answer holds no key");
         }
         try {
-            Crypto.newVerifyOnly(publicKeySpki);
+            Crypto.newVerifyOnly(publicKey);
         } catch (OwidException e) {
             throw new OwidException(
                     "the public key answer holds a key that cannot be read");
@@ -128,8 +152,10 @@ public final class PublicKeyResponse {
      * @return the JSON body
      */
     public String toJson() {
-        StringBuilder json = new StringBuilder("{\"publicKeySPKI\":");
-        appendString(json, publicKeySpki);
+        StringBuilder json = new StringBuilder("{\"format\":");
+        appendString(json, format);
+        json.append(",\"publicKey\":");
+        appendString(json, publicKey);
         json.append(",\"validFrom\":");
         appendMoment(json, validFrom);
         json.append(",\"validTo\":");
@@ -138,17 +164,22 @@ public final class PublicKeyResponse {
     }
 
     /**
-     * Reads an answer from its JSON body.
+     * Reads an answer from its JSON body. An answer that names no format is
+     * read as {@link #SPKI_FORMAT}, the encoding a request that asks for none
+     * receives.
      *
      * @param json the body
      * @return the answer, not yet checked with {@link #validate(Instant)}
-     * @throws OwidException if the body is not a JSON object of the three
+     * @throws OwidException if the body is not a JSON object of the four
      *                       fields, each a string or null
      */
     public static PublicKeyResponse parse(String json) throws OwidException {
         Map<String, String> fields = readFlatObject(json);
         return new PublicKeyResponse(
-                fields.get("publicKeySPKI"),
+                fields.containsKey("format")
+                        ? fields.get("format")
+                        : SPKI_FORMAT,
+                fields.get("publicKey"),
                 moment(fields.get("validFrom"), "validFrom"),
                 moment(fields.get("validTo"), "validTo"));
     }
@@ -331,6 +362,6 @@ public final class PublicKeyResponse {
 
     private static OwidException notJson() {
         return new OwidException("the public key answer is not the JSON "
-                + "object of three fields the specification requires");
+                + "object of four fields the specification requires");
     }
 }

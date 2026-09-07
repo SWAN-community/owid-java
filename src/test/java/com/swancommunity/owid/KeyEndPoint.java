@@ -119,8 +119,9 @@ final class KeyEndPoint {
         server.createContext("/", new HttpHandler() {
             @Override
             public void handle(HttpExchange exchange) throws IOException {
-                String date = parameter(
-                        exchange.getRequestURI().getRawQuery(), "date");
+                String query = exchange.getRequestURI().getRawQuery();
+                String date = parameter(query, "date");
+                String format = parameter(query, "format");
                 endPoint.dates.add(date);
                 if (answer == Answer.REDIRECT) {
                     exchange.getResponseHeaders().set("Location", redirectTo);
@@ -130,7 +131,7 @@ final class KeyEndPoint {
                 }
                 Endpoints.Response response;
                 try {
-                    response = body(schedule, answer, date);
+                    response = body(schedule, answer, date, format);
                 } catch (OwidException fault) {
                     exchange.sendResponseHeaders(500, -1);
                     exchange.close();
@@ -187,15 +188,15 @@ final class KeyEndPoint {
         }
     }
 
-    /** The body to serve, or null where the end point has no key. */
     /**
      * The answer for the request, built by the library's own server side
      * helper so the client is tested against what a creator built on it
-     * sends. A creator stating no moments, and the key alone as text, are
+     * sends, honouring the format the request asks for the way the cloud
+     * does. A creator stating no moments, and the key alone as text, are
      * built here for the tests that need them.
      */
     private static Endpoints.Response body(PublicKeySchedule schedule,
-            Answer answer, String date) throws OwidException {
+            Answer answer, String date, String format) throws OwidException {
         if (answer == Answer.BROKEN_KEY) {
             // Shaped like a PEM, with a body no key can be read out of, sent
             // as the JSON form without the check a creator applies, because
@@ -207,7 +208,7 @@ final class KeyEndPoint {
                             .toJson());
         }
         if (answer == Answer.SCHEDULE) {
-            return Endpoints.publicKeyResponseAt(schedule, "pkcs", date,
+            return Endpoints.publicKeyResponseAt(schedule, format, date,
                     REQUEST_MOMENT);
         }
         Instant asked = REQUEST_MOMENT;

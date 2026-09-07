@@ -154,7 +154,7 @@ anything older than a few days means asking for the key that was in force on
 the date the identifier carries.
 
 `PublicKeyFetch` asks the creator for that key. The request is
-`/owid/api/v{n}/public-key?date={minutes}&format=pkcs`, where the version in
+`/owid/api/v{n}/public-key?date={minutes}&format=spki`, where the version in
 the path is the version byte of the identifier being checked and the minutes
 are counted from 2020-01-01 in the same way the identifier stores its date. A
 creator that ignores the parameter returns its current key, so every
@@ -448,12 +448,16 @@ domain, a null payload, or a field that cannot be serialized.
     `HttpUrlConnectionTransport` on its shared pool where none is given.
   - `clearCache` empties the keys already fetched.
   - `Endpoints.publicKeyResponse` and `Endpoints.publicKeyResponseAt` return the
-    JSON body of the public key end point, the key as `publicKeySPKI` with
-    `validFrom` and `validTo`, the UTC moments the key came into force and the
-    next key starts, and `Endpoints.publicKeyAnswer` builds and checks any such
-    answer so a key that cannot be read or a schedule that contradicts itself is
-    refused before it is sent. `PublicKeyResponse` reads and writes the body. The
-    PEM alone as text is no longer a valid answer.
+    JSON body of the public key end point, the key as `publicKey`, the encoding
+    it is in as `format`, and `validFrom` and `validTo`, the UTC moments the key
+    came into force and the next key starts. The one format defined is `spki`,
+    a Subject Public Key Info PEM. It is what a request without a `format`
+    receives, and a request for any other value is answered 400 rather than in
+    an encoding the caller did not ask for. `Endpoints.publicKeyAnswer` builds
+    and checks any such answer so a key that cannot be read or a schedule that
+    contradicts itself is refused before it is sent. `PublicKeyResponse` reads
+    and writes the body, and refuses an answer that states another format. The
+    PEM alone as text is not a valid answer.
 - `PublicKeyTransport` makes the request and answers with a
   `CompletableFuture` of the body, so a transport over any HTTP client can
   be supplied. It must never follow a redirect and must request the URL
@@ -478,7 +482,8 @@ domain, a null payload, or a field that cannot be serialized.
   points.
   - `publicKeyResponse` returns the JSON body of the public key end point
     for a creator with one key and no schedule. The path is
-    `/owid/api/v{n}/public-key` with a `format` parameter of `spki` or `pkcs`.
+    `/owid/api/v{n}/public-key` with an optional `format` parameter whose one
+    defined value is `spki`.
 
 ## Data structure notes
 

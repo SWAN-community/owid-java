@@ -30,7 +30,7 @@ import java.util.concurrent.CompletionException;
  * date the OWID carries.
  *
  * <p>The end point is
- * {@code /owid/api/v{n}/public-key?date={minutes}&amp;format=pkcs}, where the
+ * {@code /owid/api/v{n}/public-key?date={minutes}&amp;format=spki}, where the
  * version in the path is the version byte of the OWID being checked rather
  * than a constant, and the minutes are counted from 2020-01-01 in the same
  * way the OWID stores the date. Creators rotate weekly, so without the date
@@ -219,7 +219,8 @@ public final class PublicKeyFetch {
      * rotates its key returns the key that was in force when this OWID was
      * signed. The parameter is left out where the date cannot be counted,
      * which no OWID this library reads can be, because the wire format
-     * cannot hold such a date.</p>
+     * cannot hold such a date. The key is asked for by name in the one
+     * format this library reads, {@link PublicKeyResponse#SPKI_FORMAT}.</p>
      *
      * @param owid   the OWID whose creator key is wanted
      * @param scheme the scheme to use, normally {@code https}
@@ -246,7 +247,7 @@ public final class PublicKeyFetch {
         if (minutes >= 0) {
             url.append("date=").append(minutes).append('&');
         }
-        url.append("format=pkcs");
+        url.append("format=").append(PublicKeyResponse.SPKI_FORMAT);
         return url.toString();
     }
 
@@ -474,7 +475,8 @@ public final class PublicKeyFetch {
                 if (already) {
                     return CompletableFuture.completedFuture(true);
                 }
-                return keyAtUrl(endPoint + "?date=" + at + "&format=pkcs",
+                return keyAtUrl(endPoint + "?date=" + at + "&format="
+                        + PublicKeyResponse.SPKI_FORMAT,
                         owid.getDomain(), transport)
                         .handle((neighbour, failure) -> failure == null
                                 && neighbour.pem.equals(tried.pem) == false
@@ -587,9 +589,9 @@ public final class PublicKeyFetch {
      * Reads a public key answer and holds the key it carries against the
      * span it states, or against the minute asked about where it states
      * none. An answer that is not the JSON form the specification requires,
-     * the PEM alone among the other forms, or that fails the checks a
-     * creator applies before sending it, is reported as a key that cannot be
-     * read.
+     * the PEM alone among the other forms, that states a format this library
+     * does not read, or that fails the checks a creator applies before
+     * sending it, is reported as a key that cannot be read.
      */
     private static KeyAnswer readAnswer(String body, String domain,
             String endPoint, String url) throws PublicKeyFetchException {
@@ -604,7 +606,7 @@ public final class PublicKeyFetch {
                     OwidSignatureStatus.INVALID_KEY, domain, 0, e);
         }
         synchronized (LOCK) {
-            return hold(endPoint, url, answer.getPublicKeySpki(),
+            return hold(endPoint, url, answer.getPublicKey(),
                     minutesOrNull(answer.getValidFrom()),
                     minutesOrNull(answer.getValidTo()));
         }

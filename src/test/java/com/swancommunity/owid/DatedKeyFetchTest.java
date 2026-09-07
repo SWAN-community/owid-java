@@ -128,7 +128,7 @@ class DatedKeyFetchTest {
     void urlNamesTheMinuteTheIdentifierWasCreated() throws OwidException {
         assertEquals(
                 "https://51d.es/owid/api/v3/public-key?date="
-                        + KeyFixtures.IDENTIFIER_MINUTES + "&format=pkcs",
+                        + KeyFixtures.IDENTIFIER_MINUTES + "&format=spki",
                 PublicKeyFetch.publicKeyUrl(KeyFixtures.identifier(),
                         "https"),
                 "should ask 51d.es for the key in force on 4 September 2026");
@@ -147,7 +147,7 @@ class DatedKeyFetchTest {
                 "the crafted identifier is version 2");
         assertEquals(
                 "https://example.com/owid/api/v2/public-key?date="
-                        + KeyFixtures.IDENTIFIER_MINUTES + "&format=pkcs",
+                        + KeyFixtures.IDENTIFIER_MINUTES + "&format=spki",
                 PublicKeyFetch.publicKeyUrl(version2, "https"),
                 "should ask the version 2 end point");
     }
@@ -160,7 +160,7 @@ class DatedKeyFetchTest {
         assertEquals(
                 "https://example.com/owid/api/v3/public-key?date="
                         + Io.minutesSinceBase(owid.getDate())
-                        + "&format=pkcs",
+                        + "&format=spki",
                 PublicKeyFetch.publicKeyUrl(owid, "https"),
                 "should name the minute the OWID was signed");
     }
@@ -203,7 +203,7 @@ class DatedKeyFetchTest {
         Owid owid = KeyFixtures.identifier();
         KeyEndPoint endPoint = endPoint(KeyEndPoint.Answer.SCHEDULE);
         String undated = endPoint.base()
-                + "/owid/api/v3/public-key?format=pkcs";
+                + "/owid/api/v3/public-key?format=spki";
         assertEquals(OwidSignatureStatus.KEY_UNAVAILABLE,
                 statusAt(owid, undated),
                 "an undated request gets the key in force at the request, "
@@ -228,7 +228,7 @@ class DatedKeyFetchTest {
         Instant before = KeyFixtures.scheduledKeys().get(0).startsAt()
                 .minus(Duration.ofDays(14));
         String url = endPoint.base() + "/owid/api/v3/public-key?date="
-                + Io.minutesSinceBase(before) + "&format=pkcs";
+                + Io.minutesSinceBase(before) + "&format=spki";
         assertEquals(OwidSignatureStatus.KEY_UNAVAILABLE,
                 statusAt(owid, url),
                 "no key means the signature was never examined");
@@ -240,7 +240,7 @@ class DatedKeyFetchTest {
             throws IOException, OwidException {
         KeyEndPoint endPoint = endPoint(KeyEndPoint.Answer.SCHEDULE);
         String url = endPoint.base() + "/owid/api/v3/public-key?date=0"
-                + "&format=pkcs";
+                + "&format=spki";
         PublicKeyFetchException failure = failureOf(
                 PublicKeyFetch.publicKeyPemAtUrl(url, "51d.es", HTTP),
                 PublicKeyFetchException.class,
@@ -434,7 +434,7 @@ class DatedKeyFetchTest {
                 "the thread that asked is not the one that fetches");
         assertEquals(OwidSignatureStatus.SIGNATURE_VALID,
                 owid.verify(PublicKeyResponse.parse(fetch.join())
-                        .getPublicKeySpki(), ALONE).getStatus(),
+                        .getPublicKey(), ALONE).getStatus(),
                 "the key fetched on the executor verifies the identifier");
     }
 
@@ -619,7 +619,7 @@ class DatedKeyFetchTest {
     /** A key URL on the end point for the minute given. */
     private static String urlFor(KeyEndPoint endPoint, long minute) {
         return endPoint.base() + "/owid/api/v3/public-key?date=" + minute
-                + "&format=pkcs";
+                + "&format=spki";
     }
 
     /** The PEM the published schedule says was in force at the minute. */
@@ -763,7 +763,7 @@ class DatedKeyFetchTest {
         pemAt(urlFor(endPoint, recent), KeyFixtures.IDENTIFIER_DOMAIN);
         pemAt(urlFor(endPoint, started + 7 * 24 * 60),
                 KeyFixtures.IDENTIFIER_DOMAIN);
-        pemAt(endPoint.base() + "/owid/api/v3/public-key?format=pkcs",
+        pemAt(endPoint.base() + "/owid/api/v3/public-key?format=spki",
                 KeyFixtures.IDENTIFIER_DOMAIN);
         long old = started - allowance - 1;
         pemAt(urlFor(endPoint, old), KeyFixtures.IDENTIFIER_DOMAIN);
@@ -808,7 +808,7 @@ class DatedKeyFetchTest {
         for (int i = 0; i <= maximum; i++) {
             PublicKeyFetch.publicKeyPemAtUrl(
                     "https://example.invalid/owid/api/v3/public-key?date=" + i
-                            + "&format=pkcs",
+                            + "&format=spki",
                     "example.invalid", distinct).join();
         }
         assertEquals(maximum + 1, requests.get(),
@@ -923,7 +923,7 @@ class DatedKeyFetchTest {
             }
             try {
                 Endpoints.Response response = Endpoints.publicKeyResponseAt(
-                        schedule, "pkcs", date, Instant.now());
+                        schedule, "spki", date, Instant.now());
                 return CompletableFuture.completedFuture(response.getBody());
             } catch (OwidException e) {
                 throw new IllegalStateException(e);
@@ -981,7 +981,7 @@ class DatedKeyFetchTest {
             asked.add(date);
             try {
                 Endpoints.Response response = Endpoints.publicKeyResponseAt(
-                        schedule, "pkcs", date, Instant.now());
+                        schedule, "spki", date, Instant.now());
                 if (response.getStatus() != 200) {
                     CompletableFuture<String> refused =
                             new CompletableFuture<String>();
@@ -1119,6 +1119,29 @@ class DatedKeyFetchTest {
                         Instant.parse("2026-08-24T00:00:00Z")).toJson());
         assertEquals(OwidSignatureStatus.INVALID_KEY,
                 statusOf(owid, contradictory));
+    }
+
+    /**
+     * An answer that states a format other than the one this library reads
+     * is a key that cannot be read, whatever the key field holds, because
+     * the key is not in the encoding the request asked for.
+     */
+    @Test
+    void anAnswerInAnotherFormatIsAKeyThatCannotBeRead()
+            throws OwidException {
+        Owid owid = KeyFixtures.identifier();
+        final String pem = KeyFixtures.schedule().keyFor(owid)
+                .getPublicKeyPem();
+        final String other = PublicKeyResponse.of(pem, null, null).toJson()
+                .replace("\"spki\"", "\"pkcs\"");
+        assertEquals(OwidSignatureStatus.INVALID_KEY, statusOf(owid,
+                (url, domain) -> CompletableFuture.completedFuture(other)),
+                "a format this library does not read leaves the signature "
+                        + "unjudged");
+        assertEquals(OwidSignatureStatus.SIGNATURE_VALID, statusOf(owid,
+                (url, domain) -> CompletableFuture.completedFuture(
+                        PublicKeyResponse.of(pem, null, null).toJson())),
+                "the same key in the format asked for verifies");
     }
 
     /**

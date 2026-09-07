@@ -24,9 +24,11 @@ import java.time.Instant;
  * so that any HTTP server can serve them.
  *
  * <p>The mandatory end point is {@code /owid/api/v{version}/public-key},
- * returning a JSON object carrying the public key as {@code publicKeySPKI}
- * together with the moments it is valid from and to. The {@code format}
- * query parameter must be {@code spki} or {@code pkcs}.</p>
+ * returning a JSON object carrying the public key as {@code publicKey}, the
+ * encoding it is in as {@code format}, and the moments it is valid from and
+ * to. The one format defined is {@code spki}, which a request without the
+ * parameter receives, and a request for any other value is answered
+ * 400.</p>
  */
 public final class Endpoints {
 
@@ -46,31 +48,39 @@ public final class Endpoints {
 
     /**
      * Returns the JSON body for the public key end point of a creator with
-     * one key and no schedule. The key is stated as {@code publicKeySPKI} and
-     * both {@code validFrom} and {@code validTo} are null, because the
-     * creator knows nothing about when the key started or will stop.
-     *
-     * <p>The specification allows the key to be requested in SPKI or PKCS
-     * form. This implementation returns the SPKI PEM for both values because
-     * the importers accept it.</p>
+     * one key and no schedule. The key is stated as {@code publicKey} in the
+     * {@code spki} format and both {@code validFrom} and {@code validTo} are
+     * null, because the creator knows nothing about when the key started or
+     * will stop.
      *
      * @param creator the creator
-     * @param format  the format parameter, {@code spki} or {@code pkcs}
+     * @param format  the format parameter, {@code spki} or null where the
+     *                request has none
      * @return the JSON body
-     * @throws OwidException if the format is not valid, or the public key
-     *                       cannot be exported or read back
+     * @throws OwidException if the format is one this library does not
+     *                       serve, which a creator answers 400, or the public
+     *                       key cannot be exported or read back
      */
     public static String publicKeyResponse(Creator creator, String format)
             throws OwidException {
-        if ("spki".equals(format) == false && "pkcs".equals(format) == false) {
+        if (served(format) == false) {
             // The value is not repeated back, because it arrives on a query
             // string from whoever called the end point and a refusal is often
             // logged.
-            throw new OwidException(
-                    "format parameter 'spki' or 'pkcs' must be provided");
+            throw new OwidException("the only format served is "
+                    + PublicKeyResponse.SPKI_FORMAT);
         }
         return publicKeyAnswer(creator.crypto().subjectPublicKeyInfo(), null,
                 null, null);
+    }
+
+    /**
+     * Whether the format parameter asks for the one encoding this library
+     * serves, which a request without the parameter is taken to ask for.
+     */
+    private static boolean served(String format) {
+        return format == null || format.isEmpty()
+                || PublicKeyResponse.SPKI_FORMAT.equals(format);
     }
 
     /**
@@ -131,21 +141,21 @@ public final class Endpoints {
      * {@link #publicKeyAnswer}, stating the key and the moments it is valid
      * from and to, 404 with an empty body where no key is in force at the
      * date, and 400 with an empty body where the date is not a count of
-     * minutes.</p>
+     * minutes or the format is one this creator does not serve.</p>
      *
      * @param schedule the published schedule
-     * @param format   the format parameter, {@code spki} or {@code pkcs}
+     * @param format   the format parameter, {@code spki} or null where the
+     *                 request has none
      * @param date     the date parameter, or null where the request has none
      * @param now      the moment of the request
      * @return the status and body
-     * @throws OwidException if the format is not valid, or the answer would
-     *                       fail its check, which is a fault in the schedule
+     * @throws OwidException if the answer would fail its check, which is a
+     *                       fault in the schedule
      */
     public static Response publicKeyResponseAt(PublicKeySchedule schedule,
             String format, String date, Instant now) throws OwidException {
-        if ("spki".equals(format) == false && "pkcs".equals(format) == false) {
-            throw new OwidException(
-                    "format parameter 'spki' or 'pkcs' must be provided");
+        if (served(format) == false) {
+            return new Response(400, "");
         }
         Instant asked = now;
         if (date != null && date.isEmpty() == false) {
