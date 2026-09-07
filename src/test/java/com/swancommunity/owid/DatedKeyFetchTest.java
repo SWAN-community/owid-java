@@ -192,8 +192,10 @@ class DatedKeyFetchTest {
      * The same identifier against the same end point without the date, which
      * is the request a port that forgets the date makes. The end point
      * answers with the key in force at the moment of the request, ten days
-     * after the identifier was signed, the signature does not match that
-     * key, and a genuine identifier reads as a forgery.
+     * after the identifier was signed, and states a span for it that does
+     * not include the identifier's date. Nothing verifies under a key the
+     * creator says was not in force then, so the key is reported as
+     * unavailable rather than a genuine identifier as a forgery.
      */
     @Test
     void undatedFetchLeavesAnEarlierWeeksIdentifierUnverified()
@@ -202,10 +204,11 @@ class DatedKeyFetchTest {
         KeyEndPoint endPoint = endPoint(KeyEndPoint.Answer.SCHEDULE);
         String undated = endPoint.base()
                 + "/owid/api/v3/public-key?format=pkcs";
-        assertEquals(OwidSignatureStatus.SIGNATURE_INVALID,
+        assertEquals(OwidSignatureStatus.KEY_UNAVAILABLE,
                 statusAt(owid, undated),
                 "an undated request gets the key in force at the request, "
-                        + "which did not sign it");
+                        + "which the creator says was not in force when the "
+                        + "identifier was signed");
         assertEquals(Collections.singletonList((String) null),
                 endPoint.dates(),
                 "the request carried no date");
@@ -743,7 +746,9 @@ class DatedKeyFetchTest {
      * A minute within the clock drift allowance of now, or later, is asked
      * about every time and never held, because a creator whose clock differs
      * from this one's may have read it as its present rather than as the
-     * minute named. A minute beyond the allowance is held as usual. Live identifiers therefore cost one request per minute per creator and older ones cost none.
+     * minute named. A minute beyond the allowance is held as usual. Live
+     * identifiers from a creator that states no span therefore cost one
+     * request per minute and older ones cost none.
      */
     @Test
     void aMinuteWithinTheDriftAllowanceIsNotHeld() throws Exception {
@@ -942,7 +947,8 @@ class DatedKeyFetchTest {
         assertEquals(OwidSignatureStatus.SIGNATURE_INVALID,
                 statusOf(far, creator), "well inside the later key's span");
         assertEquals(2, requests.size(),
-                "the neighbouring minutes lie inside the spans held");
+                "the identifier is further from every edge than clocks may "
+                        + "differ");
         Owid genuine = signedAt("creator.test", rotation.plus(Duration.ofDays(3)),
                 second);
         assertEquals(OwidSignatureStatus.SIGNATURE_VALID,
@@ -952,6 +958,139 @@ class DatedKeyFetchTest {
         assertEquals(OwidSignatureStatus.SIGNATURE_INVALID,
                 statusOf(forged, creator),
                 "signed with a key not in force at its date");
+    }
+
+    /** The date parameter of the key URL, or null where it names none. */
+    private static String dateOf(String url) {
+        int at = url.indexOf("date=");
+        if (at < 0) {
+            return null;
+        }
+        int end = url.indexOf('&', at);
+        return url.substring(at + 5, end < 0 ? url.length() : end);
+    }
+
+    /**
+     * A stand in creator answering from the schedule through the library's
+     * own server side helper, recording the date each request asked for.
+     */
+    private static PublicKeyTransport creatorServing(
+            final PublicKeySchedule schedule, final List<String> asked) {
+        return (url, domain) -> {
+            String date = dateOf(url);
+            asked.add(date);
+            try {
+                Endpoints.Response response = Endpoints.publicKeyResponseAt(
+                        schedule, "pkcs", date, Instant.now());
+                if (response.getStatus() != 200) {
+                    CompletableFuture<String> refused =
+                            new CompletableFuture<String>();
+                    refused.completeExceptionally(new PublicKeyFetchException(
+                            "no key for the date asked about",
+                            OwidSignatureStatus.KEY_UNAVAILABLE, domain,
+                            response.getStatus(), null));
+                    return refused;
+                }
+                return CompletableFuture.completedFuture(response.getBody());
+            } catch (OwidException e) {
+                throw new IllegalStateException(e);
+            }
+        };
+    }
+
+    /**
+     * The neighbouring key is asked for by the minute just beyond the edge of
+     * the span the creator stated, not by a minute a fixed distance from the
+     * identifier, so a key in force for less than the drift allowance is
+     * still the one tried.
+     */
+    @Test
+    void theNeighbourIsAskedForByTheMinuteJustBeyondTheEdge()
+            throws OwidException {
+        Crypto first = Crypto.generate();
+        Crypto second = Crypto.generate();
+        Instant rotation = Instant.parse("2026-08-31T00:00:00Z");
+        Duration week = Duration.ofDays(7);
+        PublicKeySchedule schedule = PublicKeySchedule.of(Arrays.asList(
+                DatedPublicKey.of(rotation.minus(week),
+                        first.subjectPublicKeyInfo()),
+                DatedPublicKey.of(rotation, second.subjectPublicKeyInfo()),
+                DatedPublicKey.of(rotation.plus(week),
+                        Crypto.generate().subjectPublicKeyInfo())));
+        List<String> asked = new ArrayList<String>();
+        Owid late = signedAt("creator.test",
+                rotation.plus(Duration.ofMinutes(5)), first);
+        assertEquals(OwidSignatureStatus.SIGNATURE_VALID,
+                statusOf(late, creatorServing(schedule, asked)),
+                "signed with the earlier key just after the rotation");
+        long minute = Io.minutesSinceBase(rotation);
+        assertEquals(Arrays.asList(Long.toString(minute + 5),
+                Long.toString(minute - 1)), asked,
+                "the identifier's own minute and then the minute just before "
+                        + "the span started");
+    }
+
+    /**
+     * A key the creator states a start for and no end is in force until
+     * further notice as far as the creator has said, so a live identifier
+     * dated just after that start which does not verify under it is checked
+     * against the key before it, even though the cache holds the key only up
+     * to the drift allowance behind now.
+     */
+    @Test
+    void aKeyStatedWithoutAnEndHasNoLaterEdge() throws OwidException {
+        Crypto first = Crypto.generate();
+        Crypto second = Crypto.generate();
+        Instant rotation = Io.baseDate().plus(Duration.ofMinutes(
+                Io.minutesSinceBase(Instant.now()) - 5));
+        PublicKeySchedule schedule = PublicKeySchedule.of(Arrays.asList(
+                DatedPublicKey.of(rotation.minus(Duration.ofDays(7)),
+                        first.subjectPublicKeyInfo()),
+                DatedPublicKey.of(rotation, second.subjectPublicKeyInfo())));
+        List<String> asked = new ArrayList<String>();
+        Owid live = signedAt("creator.test",
+                rotation.plus(Duration.ofMinutes(2)), first);
+        assertEquals(OwidSignatureStatus.SIGNATURE_VALID,
+                statusOf(live, creatorServing(schedule, asked)),
+                "a live identifier signed with the key before the current "
+                        + "one verifies");
+        assertEquals(2, asked.size(),
+                "the current key and then the key before it were asked for");
+    }
+
+    /**
+     * A creator whose own statement puts the identifier's date outside the
+     * span of the key it answered with has said that key did not sign at
+     * that date, so nothing verifying under it leaves the key unavailable
+     * rather than the signature not matching. A forgery dated inside the
+     * span is still reported as not matching.
+     */
+    @Test
+    void aKeyTheCreatorSaysWasNotInForceLeavesTheSignatureUnjudged()
+            throws OwidException {
+        Crypto first = Crypto.generate();
+        Crypto second = Crypto.generate();
+        Crypto stranger = Crypto.generate();
+        Instant rotation = Instant.parse("2026-08-31T00:00:00Z");
+        Instant end = rotation.plus(Duration.ofDays(7));
+        final String answer = Endpoints.publicKeyAnswer(
+                second.subjectPublicKeyInfo(), rotation, end, null);
+        // A creator that ignores the date asked about and answers with the
+        // current key and its span whatever the request.
+        PublicKeyTransport current = (url, domain) ->
+                CompletableFuture.completedFuture(answer);
+        Owid earlier = signedAt("creator.test",
+                rotation.minus(Duration.ofDays(3)), first);
+        assertEquals(OwidSignatureStatus.KEY_UNAVAILABLE,
+                statusOf(earlier, current),
+                "the key answered with was not in force at the identifier's "
+                        + "date");
+        Owid forged = signedAt("creator.test",
+                rotation.plus(Duration.ofDays(3)), stranger);
+        assertEquals(OwidSignatureStatus.SIGNATURE_INVALID,
+                statusOf(forged, current),
+                "a signature failing under the key in force at its date does "
+                        + "not match");
     }
 
     /** The status of an OWID checked through the transport given. */

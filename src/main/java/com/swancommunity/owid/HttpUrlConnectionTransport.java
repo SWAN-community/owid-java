@@ -173,7 +173,7 @@ public final class HttpUrlConnectionTransport implements PublicKeyTransport {
             connection.setRequestMethod("GET");
             connection.setConnectTimeout(CONNECT_TIMEOUT_MILLISECONDS);
             connection.setReadTimeout(READ_TIMEOUT_MILLISECONDS);
-            connection.setRequestProperty("Accept", "text/plain");
+            connection.setRequestProperty("Accept", "application/json");
             int code = connection.getResponseCode();
             if (code != HttpURLConnection.HTTP_OK) {
                 drain(connection.getErrorStream());

@@ -28,9 +28,10 @@ import java.time.Instant;
  * <ul>
  *   <li>{@code /owid/api/v{version}/creator} returning JSON with the domain,
  *       common name, and public key of the creator.</li>
- *   <li>{@code /owid/api/v{version}/public-key} returning the public key as
- *       PEM text. The {@code format} query parameter must be {@code spki} or
- *       {@code pkcs}.</li>
+ *   <li>{@code /owid/api/v{version}/public-key} returning a JSON object
+ *       carrying the public key as {@code publicKeySPKI} together with the
+ *       moments it is valid from and to. The {@code format} query parameter
+ *       must be {@code spki} or {@code pkcs}.</li>
  * </ul>
  */
 public final class Endpoints {

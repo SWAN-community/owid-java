@@ -73,20 +73,24 @@ public final class PublicKeyFetch {
      * How far a creator's clock may run ahead of or behind this one's, in
      * minutes.
      *
-     * <p>It is used in two places. A creator that does not state the span of
-     * the key it answers with reads a date later than its own now as now, so
-     * within this window of now this process cannot tell whether the creator
-     * read the minute as its past or as its present, and nothing learned from
-     * such an answer is held or served. And a creator's signing machines may
-     * not agree with the creator's own schedule to the minute, so an
-     * identifier dated within this window of a key's edge that does not
-     * verify under that key is checked against the neighbouring key before
+     * <p>It is used in two places. A creator that does not state the end of
+     * the span of the key it answers with reads a date later than its own
+     * now as now, so within this window of now this process cannot tell
+     * whether the creator read the minute as its past or as its present, and
+     * nothing learned from such an answer is held or served. And a creator's
+     * signing machines may not agree with the creator's own schedule to the
+     * minute, so an identifier dated within this window of an edge of the
+     * span the creator stated for a key that does not verify under that key
+     * is checked against the key for the minute just beyond that edge before
      * it is reported as not matching.</p>
      */
     private static final long CLOCK_DRIFT_ALLOWANCE_MINUTES = 15;
 
     /** The minute {@link #minuteOf} answers where the URL names none. */
     private static final long NO_MINUTE = -1;
+
+    /** The last minute an OWID can carry, being an unsigned 32 bit count. */
+    private static final long MAXIMUM_MINUTE = 0xFFFFFFFFL;
 
     /**
      * One key a creator has answered with, and the span of minutes the key
@@ -108,12 +112,20 @@ public final class PublicKeyFetch {
         long last;
         /** Whether the creator stated the whole span itself. */
         boolean explicit;
+        /**
+         * Whether the creator stated the start of the span and no end, so
+         * that as far as the creator has said the key is in force until
+         * further notice, whatever this cache holds it for.
+         */
+        boolean openEnded;
 
-        HeldKey(String pem, long first, long last, boolean explicit) {
+        HeldKey(String pem, long first, long last, boolean explicit,
+                boolean openEnded) {
             this.pem = pem;
             this.first = first;
             this.last = last;
             this.explicit = explicit;
+            this.openEnded = openEnded;
         }
 
         /** Whether the minute lies within the known span. */
@@ -123,14 +135,20 @@ public final class PublicKeyFetch {
     }
 
     /**
-     * What the cache or a fetch answers with. The key, and where it is known,
-     * the span of minutes the key covers, so that a caller can tell whether
-     * the identifier it is checking sits near the edge of the span.
+     * What the cache or a fetch answers with. The key and, where the creator
+     * stated one, the span of minutes the creator says the key covers, so
+     * that a caller can tell whether the identifier it is checking sits near
+     * an edge of the span, or outside it altogether. A span stated with a
+     * start and no end runs to the last minute there is.
      */
     private static final class KeyAnswer {
+        /** The key in PEM form. */
         final String pem;
+        /** The first minute the creator says the key covers. */
         final long first;
+        /** The last minute the creator says the key covers. */
         final long last;
+        /** Whether the creator stated a span at all. */
         final boolean known;
 
         KeyAnswer(String pem, long first, long last, boolean known) {
@@ -144,6 +162,7 @@ public final class PublicKeyFetch {
             return new KeyAnswer(pem, 0, 0, false);
         }
 
+        /** Whether the minute lies within the stated span. */
         boolean covers(long minute) {
             return known && first <= minute && minute <= last;
         }
@@ -374,10 +393,19 @@ public final class PublicKeyFetch {
      * once the URL is known, kept apart so that the tests drive the real
      * fetch against a key end point the tests can stand up locally rather
      * than against a near copy of the fetch.
+     *
+     * <p>The signature is checked under the key the end point serves for the
+     * OWID's own minute, and under the neighbouring key where that minute is
+     * within the clock drift allowance of an edge of the span the creator
+     * stated. A key the creator says was not in force at the OWID's minute
+     * proves nothing about the identifier, so where nothing verifies under
+     * such a key the answer is that the key is unavailable and not that the
+     * signature does not match.</p>
      */
     static CompletableFuture<OwidVerificationResult> verifyAtUrl(
             final Owid owid, final String url, final List<Owid> others,
             final PublicKeyTransport transport) {
+        final long minute = Io.minutesSinceBase(owid.getDate());
         return keyAtUrl(url, owid.getDomain(), transport)
                 .handle((answer, failure) -> {
                     if (failure != null) {
@@ -387,14 +415,23 @@ public final class PublicKeyFetch {
                     OwidVerificationResult result = owid.verify(answer.pem,
                             others);
                     if (result.getStatus()
-                            != OwidSignatureStatus.SIGNATURE_INVALID) {
+                            != OwidSignatureStatus.SIGNATURE_INVALID
+                            || minute < 0) {
                         return CompletableFuture.completedFuture(result);
                     }
-                    return neighbourVerifies(owid, url, answer, others,
-                            transport).thenApply(verified -> verified
-                                    ? OwidVerificationResult.of(
-                                            OwidSignatureStatus.SIGNATURE_VALID)
-                                    : result);
+                    return neighbourVerifies(owid, minute, url, answer,
+                            others, transport).thenApply(verified -> {
+                                if (verified) {
+                                    return OwidVerificationResult.of(
+                                            OwidSignatureStatus.SIGNATURE_VALID);
+                                }
+                                if (answer.known
+                                        && answer.covers(minute) == false) {
+                                    return OwidVerificationResult.of(
+                                            OwidSignatureStatus.KEY_UNAVAILABLE);
+                                }
+                                return result;
+                            });
                 })
                 .thenCompose(future -> future);
     }
@@ -408,32 +445,31 @@ public final class PublicKeyFetch {
      * been signed with the key before it, and one dated just before may have
      * been signed with the key after. Where the signature does not verify
      * under the key selected and the OWID's minute is within the clock drift
-     * allowance of the edge of the span that key is known to cover, the key
-     * for the minute just beyond that edge is asked for and tried. A key
-     * already known to cover the neighbouring minute is not asked for again,
-     * and a neighbour that turns out to be the same key is not tried again.
-     * This costs at most two more requests, and only for a signature that
-     * has already failed.</p>
+     * allowance of an edge of the span the creator stated for that key, the
+     * key for the minute just beyond that edge is asked for and tried. A key
+     * already held for that minute is not asked for again, and a neighbour
+     * that turns out to be the same key is not tried again. A creator that
+     * stated no span has one key and no schedule, so there is no neighbour
+     * to try. This costs at most two more requests, and only for a signature
+     * that has already failed.</p>
      */
     private static CompletableFuture<Boolean> neighbourVerifies(
-            final Owid owid, String url, final KeyAnswer tried,
+            final Owid owid, long minute, String url, final KeyAnswer tried,
             final List<Owid> others, PublicKeyTransport transport) {
-        long minute = Io.minutesSinceBase(owid.getDate());
-        if (minute < 0 || (tried.known && tried.covers(minute) == false)) {
-            // Either the OWID's minute cannot be counted, or the key tried
-            // was never in force at that minute, so the OWID is not near an
-            // edge of that key's span.
+        if (tried.known == false) {
             return CompletableFuture.completedFuture(false);
+        }
+        List<Long> beyond = new ArrayList<Long>(2);
+        if (tried.first > 0 && nearEdge(minute, tried.first)) {
+            beyond.add(tried.first - 1);
+        }
+        if (tried.last < MAXIMUM_MINUTE && nearEdge(minute, tried.last)) {
+            beyond.add(tried.last + 1);
         }
         final String endPoint = endPointOf(url);
         CompletableFuture<Boolean> verified =
                 CompletableFuture.completedFuture(false);
-        for (final long at : new long[] {
-                minute - CLOCK_DRIFT_ALLOWANCE_MINUTES,
-                minute + CLOCK_DRIFT_ALLOWANCE_MINUTES}) {
-            if (at < 0 || at > 0xFFFFFFFFL || tried.covers(at)) {
-                continue;
-            }
+        for (final long at : beyond) {
             verified = verified.thenCompose(already -> {
                 if (already) {
                     return CompletableFuture.completedFuture(true);
@@ -447,6 +483,15 @@ public final class PublicKeyFetch {
             });
         }
         return verified;
+    }
+
+    /**
+     * Whether the minute is no further from the edge minute than the clocks
+     * of a creator's signing machines are allowed to differ from its
+     * schedule.
+     */
+    private static boolean nearEdge(long minute, long edge) {
+        return Math.abs(minute - edge) <= CLOCK_DRIFT_ALLOWANCE_MINUTES;
     }
 
     /**
@@ -649,7 +694,7 @@ public final class PublicKeyFetch {
             boolean recent = recent(minute);
             for (HeldKey key : keys) {
                 if (key.covers(minute) && (key.explicit || recent == false)) {
-                    return new KeyAnswer(key.pem, key.first, key.last, true);
+                    return statedFor(key);
                 }
             }
         }
@@ -657,10 +702,40 @@ public final class PublicKeyFetch {
     }
 
     /**
+     * The span the creator stated for a held key, which is the whole held
+     * span where the creator stated it, runs to the last minute there is
+     * where the creator stated a start and no end, and is nothing where the
+     * creator stated no span.
+     */
+    private static KeyAnswer statedFor(HeldKey key) {
+        if (key.explicit) {
+            return new KeyAnswer(key.pem, key.first, key.last, true);
+        }
+        if (key.openEnded) {
+            return new KeyAnswer(key.pem, key.first, MAXIMUM_MINUTE, true);
+        }
+        return KeyAnswer.unknown(key.pem);
+    }
+
+    /**
+     * The span the creator stated in its answer. See
+     * {@link #statedFor(HeldKey)}.
+     */
+    private static KeyAnswer stated(String pem, Long start, Long end) {
+        if (start == null) {
+            return KeyAnswer.unknown(pem);
+        }
+        if (end != null && end > start) {
+            return new KeyAnswer(pem, start, end - 1, true);
+        }
+        return new KeyAnswer(pem, start, MAXIMUM_MINUTE, true);
+    }
+
+    /**
      * Records the creator's answer to the URL, being the key and, where the
      * creator stated it, the span the key covers as the minute it came into
      * force and the minute the next key starts. Returns the key with the span
-     * it is now known to cover. Called under the lock.
+     * the creator stated for it. Called under the lock.
      *
      * <p>With both the start and the end the whole span is held as the
      * creator's own statement. With the start alone the key is held from the
@@ -674,10 +749,12 @@ public final class PublicKeyFetch {
      */
     private static KeyAnswer hold(String endPoint, String url, String pem,
             Long start, Long end) {
+        KeyAnswer stated = stated(pem, start, end);
         long minute = minuteOf(url);
         long first;
         long last;
         boolean explicit = false;
+        boolean openEnded = false;
         if (start != null && end != null && end > start) {
             first = start;
             last = end - 1;
@@ -686,11 +763,12 @@ public final class PublicKeyFetch {
             first = start;
             last = Math.max(start, Io.minutesSinceBase(Instant.now())
                     - CLOCK_DRIFT_ALLOWANCE_MINUTES);
+            openEnded = true;
         } else if (minute != NO_MINUTE && recent(minute) == false) {
             first = minute;
             last = minute;
         } else {
-            return KeyAnswer.unknown(pem);
+            return stated;
         }
         List<HeldKey> keys = CACHE.get(endPoint);
         if (keys != null) {
@@ -698,17 +776,19 @@ public final class PublicKeyFetch {
                 if (key.pem.equals(pem)) {
                     if (widen(keys, key, first, last)) {
                         key.explicit = key.explicit || explicit;
-                        return new KeyAnswer(pem, key.first, key.last, true);
+                        key.openEnded = key.explicit == false
+                                && (key.openEnded || openEnded);
                     }
-                    // The creator has answered with another key inside this
-                    // span before, which it does not do unless it went back
-                    // to a key it had left. Nothing more is held about it.
-                    return KeyAnswer.unknown(pem);
+                    // Where the span was not widened the creator has
+                    // answered with another key inside it before, which it
+                    // does not do unless it went back to a key it had left,
+                    // and nothing more is held about this key.
+                    return stated;
                 }
             }
             for (HeldKey other : keys) {
                 if (other.last >= first && other.first <= last) {
-                    return KeyAnswer.unknown(pem);
+                    return stated;
                 }
             }
         }
@@ -721,9 +801,9 @@ public final class PublicKeyFetch {
             keys = new ArrayList<HeldKey>();
             CACHE.put(endPoint, keys);
         }
-        keys.add(new HeldKey(pem, first, last, explicit));
+        keys.add(new HeldKey(pem, first, last, explicit, openEnded));
         heldKeys++;
-        return new KeyAnswer(pem, first, last, true);
+        return stated;
     }
 
     /**
