@@ -62,9 +62,6 @@ import org.junit.jupiter.api.Test;
  */
 class DatedKeyFetchTest {
 
-    /** No other OWIDs were covered by the signature on the fixture. */
-    private static final List<Owid> ALONE = Collections.emptyList();
-
     /** The transport a caller gets without naming one. */
     private static final PublicKeyTransport HTTP =
             new HttpUrlConnectionTransport();
@@ -98,7 +95,7 @@ class DatedKeyFetchTest {
 
     /** The status a fetch through the default transport ends with. */
     private static OwidSignatureStatus statusAt(Owid owid, String url) {
-        return PublicKeyFetch.verifyAtUrl(owid, url, ALONE, HTTP).join()
+        return PublicKeyFetch.verifyAtUrl(owid, url, HTTP).join()
                 .getStatus();
     }
 
@@ -370,7 +367,7 @@ class DatedKeyFetchTest {
         assertEquals(first.join(), second.join(),
                 "both callers get the one key that was fetched");
         assertEquals(OwidSignatureStatus.SIGNATURE_VALID,
-                PublicKeyFetch.verifyAtUrl(owid, url, ALONE, held).join()
+                PublicKeyFetch.verifyAtUrl(owid, url, held).join()
                         .getStatus(),
                 "the key that arrived verifies the identifier");
         assertEquals(1, held.requests.get(),
@@ -434,7 +431,7 @@ class DatedKeyFetchTest {
                 "the thread that asked is not the one that fetches");
         assertEquals(OwidSignatureStatus.SIGNATURE_VALID,
                 owid.verify(PublicKeyResponse.parse(fetch.join())
-                        .getPublicKey(), ALONE).getStatus(),
+                        .getPublicKey()).getStatus(),
                 "the key fetched on the executor verifies the identifier");
     }
 
@@ -462,8 +459,7 @@ class DatedKeyFetchTest {
         assertEquals(owid.getDomain(), failure.getDomain(),
                 "the domain asked of is carried");
         assertEquals(OwidSignatureStatus.KEY_UNAVAILABLE,
-                PublicKeyFetch.verifyAtUrl(owid, endPoint.urlFor(owid),
-                        ALONE, transport).join().getStatus(),
+                PublicKeyFetch.verifyAtUrl(owid, endPoint.urlFor(owid), transport).join().getStatus(),
                 "a check through the refusing executor is unjudged");
         assertTrue(endPoint.dates().isEmpty(),
                 "the end point was never reached");
@@ -478,7 +474,7 @@ class DatedKeyFetchTest {
                 OwidException.class,
                 "the key cannot be fetched with no transport");
         assertEquals(OwidSignatureStatus.KEY_UNAVAILABLE,
-                PublicKeyFetch.verify(owid, "https", ALONE, null).join()
+                PublicKeyFetch.verify(owid, "https", null).join()
                         .getStatus(),
                 "a check with no transport is unjudged");
         assertThrows(IllegalArgumentException.class,
@@ -530,7 +526,7 @@ class DatedKeyFetchTest {
                 OwidException.class,
                 "a URL that cannot be built fails the fetch");
         assertEquals(OwidSignatureStatus.KEY_UNAVAILABLE,
-                PublicKeyFetch.verify(owid, "https", ALONE).join()
+                PublicKeyFetch.verify(owid, "https").join()
                         .getStatus(),
                 "a URL that cannot be built leaves the signature unjudged");
     }
@@ -550,7 +546,7 @@ class DatedKeyFetchTest {
     void aSchemeThatIsNotHttpIsKeyUnavailable() throws OwidException {
         assertEquals(OwidSignatureStatus.KEY_UNAVAILABLE,
                 PublicKeyFetch.verify(
-                        KeyFixtures.identifier(), "mailto", ALONE).join()
+                        KeyFixtures.identifier(), "mailto").join()
                         .getStatus(),
                 "a scheme that fetches no key leaves the signature unjudged");
     }
@@ -832,7 +828,7 @@ class DatedKeyFetchTest {
             throws OwidException {
         byte[] payload = "payload".getBytes(StandardCharsets.UTF_8);
         byte[] data = Owid.dataForCrypto(Version.VERSION3, domain, moment,
-                payload, ALONE);
+                payload);
         return new Owid(Version.VERSION3, domain, moment, payload,
                 crypto.signByteArray(data));
     }
@@ -1097,7 +1093,7 @@ class DatedKeyFetchTest {
     private static OwidSignatureStatus statusOf(Owid owid,
             PublicKeyTransport transport) throws OwidException {
         return PublicKeyFetch.verifyAtUrl(owid,
-                PublicKeyFetch.publicKeyUrl(owid, "https"), ALONE, transport)
+                PublicKeyFetch.publicKeyUrl(owid, "https"), transport)
                 .join().getStatus();
     }
 
@@ -1172,8 +1168,7 @@ class DatedKeyFetchTest {
             Thread thread = new Thread(() -> {
                 try {
                     start.await();
-                    statuses.add(PublicKeyFetch.verifyAtUrl(owid, url, ALONE,
-                            transport).join().getStatus());
+                    statuses.add(PublicKeyFetch.verifyAtUrl(owid, url, transport).join().getStatus());
                 } catch (Exception e) {
                     throw new IllegalStateException(e);
                 }

@@ -34,7 +34,6 @@ import java.nio.ByteBuffer;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import org.junit.jupiter.api.Test;
@@ -73,7 +72,7 @@ class ReadmeExampleTest {
             Owid copy = result.getValue();
             String publicPem = crypto.publicKeyPem();
             boolean valid = copy.verifyWithPublicKey(
-                    publicPem, Collections.<Owid>emptyList());
+                    publicPem);
 
             assertTrue(valid, "the OWID read back should verify");
             assertEquals("Hello World", copy.payloadAsString(),
@@ -121,25 +120,6 @@ class ReadmeExampleTest {
                 "the two OWIDs should account for every byte");
     }
 
-    @Test
-    void chainingCoversTheOtherOwids() throws OwidException {
-        Crypto crypto = Crypto.generate();
-        Creator creator = Creator.create("example.com", crypto);
-
-        Owid root = creator.createString("root");
-        Owid party = creator.createString(
-                "party", Collections.singletonList(root));
-
-        // Verifies with the root as the single other, fails without it.
-        assertTrue(
-                party.verifyWithCrypto(
-                        crypto, Collections.singletonList(root)),
-                "should verify with the same others");
-        assertFalse(
-                party.verifyWithCrypto(crypto, Collections.<Owid>emptyList()),
-                "should fail to verify without the others");
-    }
-
     /**
      * The schedule example from the README, choosing between two weekly keys
      * by the date the identifier carries.
@@ -159,7 +139,7 @@ class ReadmeExampleTest {
                 DatedPublicKey.of(
                         Instant.parse("2026-08-31T00:00:00Z"), thisWeekPem)));
         OwidVerificationResult result = schedule.verify(
-                owid, Collections.<Owid>emptyList());
+                owid);
 
         assertEquals(OwidSignatureStatus.SIGNATURE_VALID, result.getStatus(),
                 "should choose the key that was in force and verify");
@@ -182,7 +162,7 @@ class ReadmeExampleTest {
 
         CompletableFuture<OwidVerificationResult> pending =
                 PublicKeyFetch.verify(
-                        owid, "https", Collections.<Owid>emptyList());
+                        owid, "https");
         // The call returns at once and the request runs on a background
         // thread. Continue from the future, or join it where waiting is
         // acceptable, as it is here.

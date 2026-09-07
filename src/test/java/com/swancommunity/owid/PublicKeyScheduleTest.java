@@ -45,9 +45,6 @@ class PublicKeyScheduleTest {
     private static final Instant WEEK_OF_THE_IDENTIFIER =
             Instant.parse("2026-08-31T00:00:00Z");
 
-    /** No other OWIDs were covered by the signature on the fixture. */
-    private static final List<Owid> ALONE = Collections.emptyList();
-
     /**
      * The genuine identifier verifies against the key the published schedule
      * says was in force on the day the identifier was signed. This is the
@@ -67,7 +64,7 @@ class PublicKeyScheduleTest {
         assertEquals(WEEK_OF_THE_IDENTIFIER, key.getStartsAt(),
                 "the week beginning 31 August covers 4 September");
         assertEquals(OwidSignatureStatus.SIGNATURE_VALID,
-                owid.verify(key.getPublicKeyPem(), ALONE).getStatus(),
+                owid.verify(key.getPublicKeyPem()).getStatus(),
                 "should verify against the key that signed it");
     }
 
@@ -79,7 +76,7 @@ class PublicKeyScheduleTest {
     void scheduleVerifiesTheGenuineIdentifier() throws OwidException {
         assertEquals(OwidSignatureStatus.SIGNATURE_VALID,
                 KeyFixtures.schedule()
-                        .verify(KeyFixtures.identifier(), ALONE).getStatus(),
+                        .verify(KeyFixtures.identifier()).getStatus(),
                 "should pick the signing key and verify in one call");
     }
 
@@ -100,7 +97,7 @@ class PublicKeyScheduleTest {
                 "the key in force in the following week starts after the identifier "
                         + "was signed");
         assertEquals(OwidSignatureStatus.SIGNATURE_INVALID,
-                owid.verify(later.getPublicKeyPem(), ALONE).getStatus(),
+                owid.verify(later.getPublicKeyPem()).getStatus(),
                 "a later week's key should not verify an earlier week's "
                         + "identifier");
     }
@@ -170,7 +167,7 @@ class PublicKeyScheduleTest {
                 "the newest generated key had not started when the "
                         + "identifier was signed");
         assertEquals(OwidSignatureStatus.SIGNATURE_INVALID,
-                owid.verify(newestGenerated.pem(), ALONE).getStatus(),
+                owid.verify(newestGenerated.pem()).getStatus(),
                 "selecting on the generation moment reports a genuine "
                         + "identifier as not matching");
 
@@ -179,7 +176,7 @@ class PublicKeyScheduleTest {
         assertEquals(WEEK_OF_THE_IDENTIFIER, chosen.getStartsAt(),
                 "selecting on the start picks the week that was running");
         assertEquals(OwidSignatureStatus.SIGNATURE_VALID,
-                owid.verify(chosen.getPublicKeyPem(), ALONE).getStatus(),
+                owid.verify(chosen.getPublicKeyPem()).getStatus(),
                 "selecting on the start verifies the genuine identifier");
     }
 
@@ -225,7 +222,7 @@ class PublicKeyScheduleTest {
                     "the keys are held oldest start first");
         }
         assertEquals(OwidSignatureStatus.SIGNATURE_VALID,
-                reversed.verify(KeyFixtures.identifier(), ALONE).getStatus(),
+                reversed.verify(KeyFixtures.identifier()).getStatus(),
                 "the order the keys arrived in changes nothing");
     }
 
@@ -255,7 +252,7 @@ class PublicKeyScheduleTest {
         assertNull(schedule.keyInForce(Instant.now()),
                 "no key was in force");
         assertEquals(OwidSignatureStatus.KEY_UNAVAILABLE,
-                schedule.verify(KeyFixtures.identifier(), ALONE).getStatus(),
+                schedule.verify(KeyFixtures.identifier()).getStatus(),
                 "no key means the signature was never examined");
     }
 
@@ -263,7 +260,7 @@ class PublicKeyScheduleTest {
     @Test
     void aMissingOwidIsKeyUnavailable() throws OwidException {
         assertEquals(OwidSignatureStatus.KEY_UNAVAILABLE,
-                KeyFixtures.schedule().verify(null, ALONE).getStatus(),
+                KeyFixtures.schedule().verify(null).getStatus(),
                 "there is nothing to find a key for");
     }
 

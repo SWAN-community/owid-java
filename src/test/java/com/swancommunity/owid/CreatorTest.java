@@ -22,7 +22,6 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import java.util.Collections;
 import org.junit.jupiter.api.Test;
 
 /** Unit tests for the creator signing behaviour. */
@@ -56,7 +55,7 @@ class CreatorTest {
                 "should set the current version");
         assertEquals(Owid.SIGNATURE_LENGTH, owid.getSignature().length,
                 "should produce a 64 byte signature");
-        assertTrue(owid.verifyWithCrypto(crypto, Collections.emptyList()),
+        assertTrue(owid.verifyWithCrypto(crypto),
                 "the signed OWID should verify");
     }
 
@@ -67,8 +66,8 @@ class CreatorTest {
         Owid owid = creator.createString("payload");
         String encoded = owid.asBase64();
         Owid copy = ParseAssert.parsed(Owid.parse(encoded));
-        assertTrue(copy.verifyWithPublicKey(crypto.publicKeyPem(),
-                Collections.emptyList()), "the decoded OWID should verify");
+        assertTrue(copy.verifyWithPublicKey(crypto.publicKeyPem()),
+                "the decoded OWID should verify");
     }
 
     @Test
@@ -79,23 +78,8 @@ class CreatorTest {
         byte[] bytes = owid.asByteArray();
         bytes[bytes.length - 1] ^= 0x01;
         Owid tampered = ParseAssert.parsed(Owid.parse(bytes));
-        assertFalse(tampered.verifyWithCrypto(crypto, Collections.emptyList()),
+        assertFalse(tampered.verifyWithCrypto(crypto),
                 "a tampered signature should not verify");
-    }
-
-    @Test
-    void createWithOthersRoundTrips() throws OwidException {
-        Crypto crypto = Crypto.generate();
-        Creator creator = Creator.create("example.com", crypto);
-        Owid root = creator.createString("root");
-        Owid party = creator.createString(
-                "party", Collections.singletonList(root));
-        assertTrue(
-                party.verifyWithCrypto(
-                        crypto, Collections.singletonList(root)),
-                "should verify with the same others");
-        assertFalse(party.verifyWithCrypto(crypto, Collections.emptyList()),
-                "should fail to verify without the others");
     }
 
     /**
@@ -130,7 +114,7 @@ class CreatorTest {
 
         assertArrayEquals(new byte[] {1, 2, 3}, owid.getPayload(),
                 "the OWID should keep the bytes it was signed over");
-        assertTrue(owid.verifyWithCrypto(crypto, Collections.emptyList()),
+        assertTrue(owid.verifyWithCrypto(crypto),
                 "the OWID should still verify");
     }
 
@@ -140,7 +124,7 @@ class CreatorTest {
         Creator creator = Creator.fromPrivatePem("example.com",
                 crypto.privateKeyPem());
         Owid owid = creator.createString("data");
-        assertTrue(owid.verifyWithCrypto(crypto, Collections.emptyList()),
+        assertTrue(owid.verifyWithCrypto(crypto),
                 "should sign with the imported key");
     }
 }

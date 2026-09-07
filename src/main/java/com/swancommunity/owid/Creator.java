@@ -19,8 +19,6 @@ package com.swancommunity.owid;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
-import java.util.Collections;
-import java.util.List;
 
 /**
  * Needed to create new OWIDs.
@@ -123,44 +121,15 @@ public final class Creator {
      *                       encoded, or the signing operation fails
      */
     public Owid createString(String value) throws OwidException {
-        return createString(value, Collections.<Owid>emptyList());
+        if (value == null) {
+            throw new OwidException("payload is null");
+        }
+        return createBytes(value.getBytes(StandardCharsets.UTF_8));
     }
 
     /**
      * Creates a new signed OWID for this creator carrying the bytes as the
-     * payload.
-     *
-     * @param value the payload bytes
-     * @return the signed OWID
-     * @throws OwidException if the payload is null, a field cannot be
-     *                       encoded, or the signing operation fails
-     */
-    public Owid createBytes(byte[] value) throws OwidException {
-        return createBytes(value, Collections.<Owid>emptyList());
-    }
-
-    /**
-     * Creates a new signed OWID carrying the string as the UTF-8 payload,
-     * with the other OWIDs covered by the same signature so that a tree can
-     * be verified as a whole. The same others, in the same order, must be
-     * passed when verifying.
-     *
-     * @param value  the payload string
-     * @param others the other OWIDs to cover with the signature
-     * @return the signed OWID
-     * @throws OwidException see {@link #createString(String)}
-     */
-    public Owid createString(String value, List<Owid> others)
-            throws OwidException {
-        if (value == null) {
-            throw new OwidException("payload is null");
-        }
-        return createBytes(value.getBytes(StandardCharsets.UTF_8), others);
-    }
-
-    /**
-     * Creates a new signed OWID carrying the bytes as the payload, with the
-     * other OWIDs covered by the same signature.
+     * payload. The signature covers the fields of the OWID and nothing else.
      *
      * <p>This is one of only two ways an OWID reaches calling code, the other
      * being a successful read of a complete serialized one. The creator owns
@@ -168,24 +137,19 @@ public final class Creator {
      * supplies the payload and nothing else, so there is no moment at which a
      * partly built OWID exists for anyone to hold or pass on.</p>
      *
-     * @param value  the payload bytes
-     * @param others the other OWIDs to cover with the signature
+     * @param value the payload bytes
      * @return the signed OWID
-     * @throws OwidException see {@link #createBytes(byte[])}
+     * @throws OwidException if the payload is null, a field cannot be
+     *                       encoded, or the signing operation fails
      */
-    public Owid createBytes(byte[] value, List<Owid> others)
-            throws OwidException {
+    public Owid createBytes(byte[] value) throws OwidException {
         if (value == null) {
             throw new OwidException("payload is null");
-        }
-        if (others == null) {
-            throw new OwidException("others is null");
         }
         Version version = Version.current();
         Instant date = Instant.now().truncatedTo(ChronoUnit.MINUTES);
         byte[] payload = value.clone();
-        byte[] data = Owid.dataForCrypto(
-                version, domain, date, payload, others);
+        byte[] data = Owid.dataForCrypto(version, domain, date, payload);
         byte[] signature = crypto.signByteArray(data);
         if (signature.length != Owid.SIGNATURE_LENGTH) {
             throw Io.invalidSignatureLength(signature.length);

@@ -26,7 +26,6 @@ import java.lang.management.ThreadMXBean;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
-import java.util.Collections;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -151,7 +150,7 @@ class PayloadLengthTest {
         assertArrayEquals(PAYLOAD, parsed.getPayload(),
                 "should read the payload the library wrote");
         assertEquals(original, parsed, "should parse to an equal OWID");
-        assertTrue(parsed.verifyWithCrypto(crypto, Collections.emptyList()),
+        assertTrue(parsed.verifyWithCrypto(crypto),
                 "the parsed OWID should still verify");
     }
 

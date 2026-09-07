@@ -200,15 +200,12 @@ public final class PublicKeySchedule {
      * Asks whether the signature on the OWID is genuine, using the key that
      * was in force when the OWID was signed.
      *
-     * @param owid   the OWID to check
-     * @param others the other OWIDs that were signed together with this one,
-     *               in the same order as when signed
-     *
+     * @param owid the OWID to check
      * @return the outcome of the check, which is
      *         {@link OwidSignatureStatus#KEY_UNAVAILABLE} where the schedule
      *         holds no key for the date
      */
-    public OwidVerificationResult verify(Owid owid, List<Owid> others) {
+    public OwidVerificationResult verify(Owid owid) {
         if (owid == null) {
             return OwidVerificationResult.of(
                     OwidSignatureStatus.KEY_UNAVAILABLE);
@@ -218,6 +215,6 @@ public final class PublicKeySchedule {
             return OwidVerificationResult.of(
                     OwidSignatureStatus.KEY_UNAVAILABLE);
         }
-        return owid.verify(key.getPublicKeyPem(), others);
+        return owid.verify(key.getPublicKeyPem());
     }
 }

@@ -8,10 +8,9 @@ pure Java with no external runtime dependencies.
 ## Overview
 
 An OWID records that the entity operating a domain captured or generated a
-payload at a date and time, with an ECDSA signature over the OWID and any
-other OWIDs it was signed together with. OWIDs chain together to form
-verifiable trees. The cryptography is ECDSA on the NIST P-256 curve (also
-known as secp256r1 or prime256v1) with the SHA-256 hash.
+payload at a date and time, with an ECDSA signature over the OWID. The
+cryptography is ECDSA on the NIST P-256 curve (also known as secp256r1 or
+prime256v1) with the SHA-256 hash.
 
 Read the [OWID project](https://github.com/SWAN-community/owid) to learn more
 about the concepts before looking into this implementation. This library
@@ -106,8 +105,6 @@ import com.swancommunity.owid.Crypto;
 import com.swancommunity.owid.Owid;
 import com.swancommunity.owid.OwidParseResult;
 
-import java.util.Collections;
-
 // The creator operates a domain and holds the signing keys.
 Crypto crypto = Crypto.generate();
 Creator creator = Creator.create("example.com", crypto);
@@ -125,24 +122,11 @@ OwidParseResult result = Owid.parse(encoded);
 if (result.isSuccess()) {
     Owid copy = result.getValue();
     String publicPem = crypto.publicKeyPem();
-    boolean valid = copy.verifyWithPublicKey(
-        publicPem, Collections.<Owid>emptyList());
+    boolean valid = copy.verifyWithPublicKey(publicPem);
 } else {
     // result.getStatus() names which of the expected problems it was, and
     // result.getValue() is null.
 }
-```
-
-Chaining covers other OWIDs with the same signature. The same others, in the
-same order, must be supplied when verifying as were supplied when signing.
-
-```java
-Owid root = creator.createString("root");
-Owid party = creator.createString("party", Collections.singletonList(root));
-
-// Verifies with the root as the single other, fails without it.
-party.verifyWithCrypto(crypto, Collections.singletonList(root)); // true
-party.verifyWithCrypto(crypto, Collections.<Owid>emptyList());   // false
 ```
 
 ## Verifying an identifier signed in an earlier week
@@ -305,7 +289,7 @@ as the outage it is.
 | `INVALID_SIGNATURE_LENGTH` | A signature field of the wrong length reached the check. A consumer cannot produce one, because reading and creation both settle the signature at 64 bytes. |
 | `KEY_UNAVAILABLE` | No key was supplied, or the one supplied cannot verify. |
 | `INVALID_KEY` | Key material arrived and cannot be decoded or used. |
-| `IMPLEMENTATION_CAPACITY_EXCEEDED` | More work than this runtime can hold, which needs an OWID and its chain to approach the two gigabyte limit of a Java array. |
+| `IMPLEMENTATION_CAPACITY_EXCEEDED` | More work than this runtime can hold, which needs an OWID whose payload approaches the two gigabyte limit of a Java array. |
 | `VERIFICATION_ERROR` | The check could not be completed for a reason that is not the identifier's fault. |
 
 ## Reading one OWID out of something longer
@@ -386,7 +370,7 @@ copies, because a Java byte array is mutable.
 | `new Owid()`, then `setPayload`, then `creator.sign(owid)` | `creator.createBytes(payload)` |
 | `creator.signString(value)` | `creator.createString(value)` |
 | `creator.signBytes(value)` | `creator.createBytes(value)` |
-| `new Owid()`, then `creator.signWithOthers(owid, others)` | `creator.createBytes(payload, others)` |
+| `new Owid()`, then `creator.signWithOthers(owid, others)` | no replacement, a signature covers the OWID alone |
 | `owid.setVersion`, `setDomain`, `setDate`, `setPayload` | no replacement, the state is read only |
 | `Version.fromByte(b)` | no replacement, an unknown version byte is `UNSUPPORTED_VERSION` from a read, and version zero is `ABSENT_NODE` |
 
@@ -412,8 +396,8 @@ domain, a null payload, or a field that cannot be serialized.
     returns zero padded lower case hexadecimal with no separator.
     `payloadAsBase64` returns the payload as base 64. `getPayloadLength`
     reports the payload size without copying it.
-  - `verifyWithCrypto` and `verifyWithPublicKey` return whether the signature,
-    covering this OWID and any others provided, is valid.
+  - `verifyWithCrypto` and `verifyWithPublicKey` return whether the signature
+    is valid.
   - `verify`, taking either the `Crypto` or the public key PEM, answers the
     same question with a status, keeping a key that could not be used apart
     from a signature that does not match.
@@ -431,8 +415,7 @@ domain, a null payload, or a field that cannot be serialized.
 - `Creator` binds a domain to a signing `Crypto`.
   - `createString` and `createBytes` create a complete signed OWID, setting
     the domain to the creator domain, the date to the current time and the
-    version to the current version. Both take an optional list of other OWIDs
-    to cover with the same signature.
+    version to the current version.
 - `PublicKeyFetch` obtains the key of another creator from the well known end
   point on the domain the OWID carries.
   - `publicKeyUrl` builds the request, naming the version of the OWID and the
@@ -534,8 +517,8 @@ mvn test
 ```
 
 The tests round trip the canonical wire format vectors byte for byte, verify
-cross language signed fixtures including the chained case, confirm that a
-flipped signature byte fails verification, and cover the binary write
+cross language signed fixtures, confirm that a flipped signature byte fails
+verification, and cover the binary write
 helpers, the crypto, the creator, and the end point helpers. They also cover
 the parse contract, being every status the reading surfaces report together
 with a run of malformed buffers that must never throw, the framed read and

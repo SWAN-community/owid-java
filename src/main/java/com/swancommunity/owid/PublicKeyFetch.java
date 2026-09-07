@@ -317,14 +317,11 @@ public final class PublicKeyFetch {
      *
      * @param owid   the OWID to check
      * @param scheme the scheme to use, normally {@code https}
-     * @param others the other OWIDs that were signed together with this one,
-     *               in the same order as when signed
-     *
      * @return the outcome of the check, through a future
      */
     public static CompletableFuture<OwidVerificationResult> verify(Owid owid,
-            String scheme, List<Owid> others) {
-        return verify(owid, scheme, others, DEFAULT_TRANSPORT);
+            String scheme) {
+        return verify(owid, scheme, DEFAULT_TRANSPORT);
     }
 
     /**
@@ -346,14 +343,11 @@ public final class PublicKeyFetch {
      *
      * @param owid      the OWID to check
      * @param scheme    the scheme to use, normally {@code https}
-     * @param others    the other OWIDs that were signed together with this
-     *                  one, in the same order as when signed
-     *
      * @param transport the transport to make the request with
      * @return the outcome of the check, through a future
      */
     public static CompletableFuture<OwidVerificationResult> verify(Owid owid,
-            String scheme, List<Owid> others, PublicKeyTransport transport) {
+            String scheme, PublicKeyTransport transport) {
         String url;
         try {
             url = publicKeyUrl(owid, scheme);
@@ -362,7 +356,7 @@ public final class PublicKeyFetch {
                     OwidVerificationResult.of(
                             OwidSignatureStatus.KEY_UNAVAILABLE));
         }
-        return verifyAtUrl(owid, url, others, transport);
+        return verifyAtUrl(owid, url, transport);
     }
 
     /**
@@ -390,8 +384,8 @@ public final class PublicKeyFetch {
     }
 
     /**
-     * The work {@link #verify(Owid, String, List, PublicKeyTransport)} does
-     * once the URL is known, kept apart so that the tests drive the real
+     * The work {@link #verify(Owid, String, PublicKeyTransport)} does once
+     * the URL is known, kept apart so that the tests drive the real
      * fetch against a key end point the tests can stand up locally rather
      * than against a near copy of the fetch.
      *
@@ -404,7 +398,7 @@ public final class PublicKeyFetch {
      * signature does not match.</p>
      */
     static CompletableFuture<OwidVerificationResult> verifyAtUrl(
-            final Owid owid, final String url, final List<Owid> others,
+            final Owid owid, final String url,
             final PublicKeyTransport transport) {
         final long minute = Io.minutesSinceBase(owid.getDate());
         return keyAtUrl(url, owid.getDomain(), transport)
@@ -413,15 +407,14 @@ public final class PublicKeyFetch {
                         return CompletableFuture.completedFuture(
                                 OwidVerificationResult.of(statusOf(failure)));
                     }
-                    OwidVerificationResult result = owid.verify(answer.pem,
-                            others);
+                    OwidVerificationResult result = owid.verify(answer.pem);
                     if (result.getStatus()
                             != OwidSignatureStatus.SIGNATURE_INVALID
                             || minute < 0) {
                         return CompletableFuture.completedFuture(result);
                     }
                     return neighbourVerifies(owid, minute, url, answer,
-                            others, transport).thenApply(verified -> {
+                            transport).thenApply(verified -> {
                                 if (verified) {
                                     return OwidVerificationResult.of(
                                             OwidSignatureStatus.SIGNATURE_VALID);
@@ -456,7 +449,7 @@ public final class PublicKeyFetch {
      */
     private static CompletableFuture<Boolean> neighbourVerifies(
             final Owid owid, long minute, String url, final KeyAnswer tried,
-            final List<Owid> others, PublicKeyTransport transport) {
+            PublicKeyTransport transport) {
         if (tried.known == false) {
             return CompletableFuture.completedFuture(false);
         }
@@ -480,7 +473,7 @@ public final class PublicKeyFetch {
                         owid.getDomain(), transport)
                         .handle((neighbour, failure) -> failure == null
                                 && neighbour.pem.equals(tried.pem) == false
-                                && owid.verify(neighbour.pem, others).getStatus()
+                                && owid.verify(neighbour.pem).getStatus()
                                         == OwidSignatureStatus.SIGNATURE_VALID);
             });
         }

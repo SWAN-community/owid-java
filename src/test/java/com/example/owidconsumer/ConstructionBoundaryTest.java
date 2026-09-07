@@ -34,7 +34,6 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.nio.charset.StandardCharsets;
-import java.util.Collections;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -142,24 +141,22 @@ class ConstructionBoundaryTest {
                 "writing into the copy should not reach the OWID");
         assertArrayEquals(encoded, owid.asByteArray(),
                 "the OWID should serialise to the same bytes");
-        assertTrue(owid.verifyWithCrypto(crypto, Collections.<Owid>emptyList()),
+        assertTrue(owid.verifyWithCrypto(crypto),
                 "the OWID should still verify");
     }
 
     /**
      * A library user can still do everything the old surface allowed, by the
-     * new route. Creating, chaining, serialising, reading back and verifying
-     * all work without ever naming a constructor.
+     * new route. Creating, serialising, reading back and verifying all work
+     * without ever naming a constructor.
      */
     @Test
     void aLibraryUserCanStillDoEverything() throws OwidException {
         Crypto crypto = Crypto.generate();
         Creator creator = Creator.create("example.com", crypto);
 
-        Owid root = creator.createString("root");
         Owid party = creator.createBytes(
-                "party".getBytes(StandardCharsets.UTF_8),
-                Collections.singletonList(root));
+                "party".getBytes(StandardCharsets.UTF_8));
 
         OwidParseResult result = Owid.parse(party.asBase64());
         assertEquals(OwidParseStatus.PARSED, result.getStatus(),
@@ -167,9 +164,8 @@ class ConstructionBoundaryTest {
         Owid copy = result.getValue();
 
         assertEquals(party, copy, "should read back an equal OWID");
-        assertTrue(copy.verifyWithPublicKey(crypto.publicKeyPem(),
-                        Collections.singletonList(root)),
-                "should verify with the same others");
+        assertTrue(copy.verifyWithPublicKey(crypto.publicKeyPem()),
+                "should verify with the creator's public key");
         assertEquals("party", copy.payloadAsString(),
                 "should carry the payload it was created with");
     }

@@ -27,7 +27,6 @@ import java.lang.reflect.Method;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
 import java.util.Base64;
-import java.util.Collections;
 import java.util.Random;
 import org.junit.jupiter.api.Test;
 
@@ -273,7 +272,7 @@ class ParseContractTest {
         Owid owid = ParseAssert.parsed(Owid.parse(bytes));
 
         OwidVerificationResult verification =
-                owid.verify(crypto, Collections.<Owid>emptyList());
+                owid.verify(crypto);
         assertEquals(OwidSignatureStatus.SIGNATURE_INVALID,
                 verification.getStatus(),
                 "the signature should be reported as not matching");
