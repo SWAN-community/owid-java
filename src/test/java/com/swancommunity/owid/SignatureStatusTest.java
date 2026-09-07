@@ -20,8 +20,6 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import java.util.Collections;
-import java.util.List;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -35,13 +33,11 @@ import org.junit.jupiter.api.Test;
  *
  * <p>Every member of {@link OwidSignatureStatus} is exercised here except
  * {@link OwidSignatureStatus#IMPLEMENTATION_CAPACITY_EXCEEDED}, which needs
- * an OWID and its chain to approach the two gigabyte limit of a Java array
+ * an OWID whose payload approaches the two gigabyte limit of a Java array
  * and so cannot be built in a suite that has to run on an ordinary machine.
  * The reason is recorded on the member itself as well.</p>
  */
 class SignatureStatusTest {
-
-    private static final List<Owid> NONE = Collections.<Owid>emptyList();
 
     private static Crypto crypto() throws OwidException {
         return Crypto.generate();
@@ -54,7 +50,7 @@ class SignatureStatusTest {
         Owid owid = Creator.create("example.com", crypto)
                 .createString("payload");
 
-        OwidVerificationResult result = owid.verify(crypto, NONE);
+        OwidVerificationResult result = owid.verify(crypto);
 
         assertTrue(result.isValid(), "a genuine signature should be valid");
         assertEquals(OwidSignatureStatus.SIGNATURE_VALID, result.getStatus(),
@@ -69,7 +65,7 @@ class SignatureStatusTest {
                 .createString("payload");
 
         OwidVerificationResult result = owid.verify(
-                crypto.publicKeyPem(), NONE);
+                crypto.publicKeyPem());
 
         assertEquals(OwidSignatureStatus.SIGNATURE_VALID, result.getStatus(),
                 "should report the signature as valid");
@@ -85,7 +81,7 @@ class SignatureStatusTest {
                 .createString("payload");
 
         OwidVerificationResult result =
-                owid.verify(crypto(), NONE);
+                owid.verify(crypto());
 
         assertFalse(result.isValid(), "the signature should not be valid");
         assertEquals(OwidSignatureStatus.SIGNATURE_INVALID, result.getStatus(),
@@ -102,13 +98,13 @@ class SignatureStatusTest {
                 .createString("payload");
 
         assertEquals(OwidSignatureStatus.KEY_UNAVAILABLE,
-                owid.verify((Crypto) null, NONE).getStatus(),
+                owid.verify((Crypto) null).getStatus(),
                 "a missing crypto instance should not judge the signature");
         assertEquals(OwidSignatureStatus.KEY_UNAVAILABLE,
-                owid.verify((String) null, NONE).getStatus(),
+                owid.verify((String) null).getStatus(),
                 "a missing PEM should not judge the signature");
         assertEquals(OwidSignatureStatus.KEY_UNAVAILABLE,
-                owid.verify("   ", NONE).getStatus(),
+                owid.verify("   ").getStatus(),
                 "an empty PEM should not judge the signature");
     }
 
@@ -125,13 +121,13 @@ class SignatureStatusTest {
                 .createString("payload");
 
         assertEquals(OwidSignatureStatus.INVALID_KEY,
-                owid.verify("not a PEM", NONE)
+                owid.verify("not a PEM")
                         .getStatus(),
                 "material that is not a key should be reported as the key");
         assertEquals(OwidSignatureStatus.INVALID_KEY,
                 owid.verify(
                         "-----BEGIN PUBLIC KEY-----\nAAAA\n"
-                                + "-----END PUBLIC KEY-----\n", NONE)
+                                + "-----END PUBLIC KEY-----\n")
                         .getStatus(),
                 "a PEM whose body is not a key should be reported as the key");
     }
@@ -157,10 +153,10 @@ class SignatureStatusTest {
                 Envelope.filled(Owid.SIGNATURE_LENGTH - 1, (byte) 1));
 
         assertEquals(OwidSignatureStatus.INVALID_SIGNATURE_LENGTH,
-                noSignature.verify(crypto(), NONE).getStatus(),
+                noSignature.verify(crypto()).getStatus(),
                 "no signature is not the same as a signature that is wrong");
         assertEquals(OwidSignatureStatus.INVALID_SIGNATURE_LENGTH,
-                shortSignature.verify(crypto(), NONE).getStatus(),
+                shortSignature.verify(crypto()).getStatus(),
                 "a 63 byte signature is not a signature that is wrong");
     }
 
@@ -181,7 +177,7 @@ class SignatureStatusTest {
                 Envelope.filled(Owid.SIGNATURE_LENGTH, (byte) 1));
 
         assertEquals(OwidSignatureStatus.VERIFICATION_ERROR,
-                owid.verify(crypto(), NONE).getStatus(),
+                owid.verify(crypto()).getStatus(),
                 "a field that cannot be encoded is not an invalid signature");
     }
 
@@ -196,11 +192,11 @@ class SignatureStatusTest {
         Owid owid = Creator.create("example.com", crypto)
                 .createString("payload");
 
-        assertTrue(owid.verifyWithCrypto(crypto, NONE),
+        assertTrue(owid.verifyWithCrypto(crypto),
                 "a genuine signature should verify");
-        assertTrue(owid.verifyWithPublicKey(crypto.publicKeyPem(), NONE),
+        assertTrue(owid.verifyWithPublicKey(crypto.publicKeyPem()),
                 "a genuine signature should verify through the PEM");
-        assertFalse(owid.verifyWithCrypto(crypto(), NONE),
+        assertFalse(owid.verifyWithCrypto(crypto()),
                 "a signature checked against another key should not verify");
     }
 }

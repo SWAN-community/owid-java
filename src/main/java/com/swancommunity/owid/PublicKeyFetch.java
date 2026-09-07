@@ -16,16 +16,13 @@
 
 package com.swancommunity.owid;
 
-import java.io.ByteArrayOutputStream;
-import java.io.IOException;
-import java.io.InputStream;
-import java.net.HttpURLConnection;
-import java.net.URL;
-import java.net.URLConnection;
-import java.nio.charset.StandardCharsets;
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 
 /**
  * Fetches the signing public key of a creator from the well known end point
@@ -33,7 +30,7 @@ import java.util.concurrent.ConcurrentHashMap;
  * date the OWID carries.
  *
  * <p>The end point is
- * {@code /owid/api/v{n}/public-key?date={minutes}&amp;format=pkcs}, where the
+ * {@code /owid/api/v{n}/public-key?date={minutes}&amp;format=spki}, where the
  * version in the path is the version byte of the OWID being checked rather
  * than a constant, and the minutes are counted from 2020-01-01 in the same
  * way the OWID stores the date. Creators rotate weekly, so without the date
@@ -42,6 +39,18 @@ import java.util.concurrent.ConcurrentHashMap;
  * parameter returns its current key, so every identifier it signed under an
  * earlier key reads as not matching, which is why a creator that rotates its
  * key has to honour the date.</p>
+ *
+ * <p>Every method here that reaches the network answers with a
+ * {@link CompletableFuture} and returns at once. There is no form that
+ * waits, so a request thread or an event loop is never held while a creator
+ * answers, and a caller that wants to wait joins the future itself. The
+ * request is made by a {@link PublicKeyTransport}, and where the caller
+ * names none {@link HttpUrlConnectionTransport} is used, which runs the
+ * JDK's blocking connection on a background thread. On Java 11 and later a
+ * caller can supply a transport over
+ * {@code java.net.http.HttpClient.sendAsync} instead, which blocks no thread
+ * at all. Building the URL is pure text and reaches nothing, so
+ * {@link #publicKeyUrl(Owid, String)} answers in the ordinary way.</p>
  *
  * <p>Only the JDK is used, so the library keeps its promise of no runtime
  * dependencies and still runs on Java 8, which has no HTTP client of its
@@ -52,31 +61,151 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 public final class PublicKeyFetch {
 
-    /** How long to wait for the connection to be made, in milliseconds. */
-    private static final int CONNECT_TIMEOUT_MILLISECONDS = 5000;
-
-    /** How long to wait for the response, in milliseconds. */
-    private static final int READ_TIMEOUT_MILLISECONDS = 10000;
-
     /**
      * The most keys held in the cache before the cache is emptied and filled
-     * again. A bound is needed because a verifier sees identifiers from many
-     * domains and many weeks, and an unbounded map would grow for as long as
-     * the process runs.
+     * again, across every creator. A bound is needed because a verifier sees
+     * identifiers from many domains and many weeks, and an unbounded store
+     * would grow for as long as the process runs.
      */
     private static final int MAXIMUM_CACHED_KEYS = 1024;
 
     /**
-     * Keys already fetched, held against the URL the keys were fetched from.
+     * How far a creator's clock may run ahead of or behind this one's, in
+     * minutes.
+     *
+     * <p>It is used in two places. A creator that does not state the end of
+     * the span of the key it answers with reads a date later than its own
+     * now as now, so within this window of now this process cannot tell
+     * whether the creator read the minute as its past or as its present, and
+     * nothing learned from such an answer is held or served. And a creator's
+     * signing machines may not agree with the creator's own schedule to the
+     * minute, so an identifier dated within this window of an edge of the
+     * span the creator stated for a key that does not verify under that key
+     * is checked against the key for the minute just beyond that edge before
+     * it is reported as not matching.</p>
+     */
+    private static final long CLOCK_DRIFT_ALLOWANCE_MINUTES = 15;
+
+    /** The minute {@link #minuteOf} answers where the URL names none. */
+    private static final long NO_MINUTE = -1;
+
+    /** The last minute an OWID can carry, being an unsigned 32 bit count. */
+    private static final long MAXIMUM_MINUTE = 0xFFFFFFFFL;
+
+    /**
+     * One key a creator has answered with, and the span of minutes the key
+     * is known to cover.
+     *
+     * <p>A creator's key is in force from the start of its period until the
+     * next key starts, so a key the creator confirms at two minutes was in
+     * force at every minute between them. Where the creator stated the span
+     * in its answer the span is explicit and complete, and an identifier
+     * dated anywhere inside it is verified without a request. Otherwise the
+     * span grows as the creator confirms the same key for more minutes.</p>
+     */
+    private static final class HeldKey {
+        /** The key in PEM form, as the creator served it. */
+        final String pem;
+        /** The earliest minute the key is known to cover. */
+        long first;
+        /** The latest minute the key is known to cover. */
+        long last;
+        /** Whether the creator stated the whole span itself. */
+        boolean explicit;
+        /**
+         * Whether the creator stated the start of the span and no end, so
+         * that as far as the creator has said the key is in force until
+         * further notice, whatever this cache holds it for.
+         */
+        boolean openEnded;
+
+        HeldKey(String pem, long first, long last, boolean explicit,
+                boolean openEnded) {
+            this.pem = pem;
+            this.first = first;
+            this.last = last;
+            this.explicit = explicit;
+            this.openEnded = openEnded;
+        }
+
+        /** Whether the minute lies within the known span. */
+        boolean covers(long minute) {
+            return first <= minute && minute <= last;
+        }
+    }
+
+    /**
+     * What the cache or a fetch answers with. The key and, where the creator
+     * stated one, the span of minutes the creator says the key covers, so
+     * that a caller can tell whether the identifier it is checking sits near
+     * an edge of the span, or outside it altogether. A span stated with a
+     * start and no end runs to the last minute there is.
+     */
+    private static final class KeyAnswer {
+        /** The key in PEM form. */
+        final String pem;
+        /** The first minute the creator says the key covers. */
+        final long first;
+        /** The last minute the creator says the key covers. */
+        final long last;
+        /** Whether the creator stated a span at all. */
+        final boolean known;
+
+        KeyAnswer(String pem, long first, long last, boolean known) {
+            this.pem = pem;
+            this.first = first;
+            this.last = last;
+            this.known = known;
+        }
+
+        static KeyAnswer unknown(String pem) {
+            return new KeyAnswer(pem, 0, 0, false);
+        }
+
+        /** Whether the minute lies within the stated span. */
+        boolean covers(long minute) {
+            return known && first <= minute && minute <= last;
+        }
+    }
+
+    /**
+     * Guards {@link #CACHE}, {@link #heldKeys} and {@link #IN_FLIGHT}. Held
+     * across a few map and list operations only, never across a request.
+     */
+    private static final Object LOCK = new Object();
+
+    /**
+     * Keys already fetched, by the creator's key end point, which is the key
+     * URL without its date. Each end point holds the keys the creator has
+     * answered with, each with the span of minutes the creator has confirmed
+     * it for.
      *
      * <p>The specification asks implementations to cache so that verifying
      * many identifiers does not mean repeating requests to another
-     * processor. Holding the key against the whole URL is safe because the
-     * URL names the domain, the version and the minute, and the key a
-     * creator published for a minute in the past does not change.</p>
+     * processor. The key URL carries the date of the identifier being
+     * verified, in minutes, and a creator's key changes on the order of a
+     * week. Keyed by end point and span rather than by the whole URL, an identifier dated between two minutes the
+     * creator has already answered for is verified without a request.</p>
      */
-    private static final Map<String, String> CACHE =
-            new ConcurrentHashMap<String, String>();
+    private static final Map<String, List<HeldKey>> CACHE =
+            new HashMap<String, List<HeldKey>>();
+
+    /** How many keys are held across every end point. */
+    private static int heldKeys;
+
+    /**
+     * Requests under way, by the dated URL asked for, so that a second
+     * request for a key that is still on its way joins the request already
+     * made instead of making another. An entry is removed the moment its
+     * request ends, whatever the outcome, so a failure is never handed to a
+     * later caller and an outage is never remembered.
+     */
+    private static final Map<String, CompletableFuture<KeyAnswer>> IN_FLIGHT =
+            new HashMap<String, CompletableFuture<KeyAnswer>>();
+
+    /** The transport used where the caller names none. */
+    private static final PublicKeyTransport DEFAULT_TRANSPORT =
+            new HttpUrlConnectionTransport();
 
     private PublicKeyFetch() {
     }
@@ -90,7 +219,8 @@ public final class PublicKeyFetch {
      * rotates its key returns the key that was in force when this OWID was
      * signed. The parameter is left out where the date cannot be counted,
      * which no OWID this library reads can be, because the wire format
-     * cannot hold such a date.</p>
+     * cannot hold such a date. The key is asked for by name in the one
+     * format this library reads, {@link PublicKeyResponse#SPKI_FORMAT}.</p>
      *
      * @param owid   the OWID whose creator key is wanted
      * @param scheme the scheme to use, normally {@code https}
@@ -117,203 +247,615 @@ public final class PublicKeyFetch {
         if (minutes >= 0) {
             url.append("date=").append(minutes).append('&');
         }
-        url.append("format=pkcs");
+        url.append("format=").append(PublicKeyResponse.SPKI_FORMAT);
         return url.toString();
     }
 
     /**
-     * Returns the public key PEM of the creator of the OWID, for the date
-     * the OWID carries.
+     * Fetches the public key PEM of the creator of the OWID, for the date
+     * the OWID carries, using {@link HttpUrlConnectionTransport} on its
+     * shared pool.
+     *
+     * <p>Returns at once. The future completes with the key in PEM form,
+     * fails with a {@link PublicKeyFetchException} where the key could not
+     * be obtained, carrying the status to report for the identifier, and
+     * fails with an {@link OwidException} where the OWID, the scheme or the
+     * domain is not usable. Nothing is thrown from the call itself.</p>
      *
      * @param owid   the OWID whose creator key is wanted
      * @param scheme the scheme to use, normally {@code https}
-     * @return the public key in PEM form
-     * @throws PublicKeyFetchException if the key could not be obtained, with
-     *                                 the status to report for the
-     *                                 identifier
-     * @throws OwidException           if the OWID, the scheme or the domain
-     *                                 is not usable
+     * @return the public key in PEM form, through a future
      */
-    public static String publicKeyPem(Owid owid, String scheme)
-            throws OwidException {
-        return publicKeyPemAtUrl(publicKeyUrl(owid, scheme),
-                owid.getDomain());
+    public static CompletableFuture<String> publicKeyPem(Owid owid,
+            String scheme) {
+        return publicKeyPem(owid, scheme, DEFAULT_TRANSPORT);
+    }
+
+    /**
+     * Fetches the public key PEM of the creator of the OWID, for the date
+     * the OWID carries, using the transport given.
+     *
+     * <p>Returns at once. The future completes with the key in PEM form,
+     * fails with a {@link PublicKeyFetchException} where the key could not
+     * be obtained, carrying the status to report for the identifier, and
+     * fails with an {@link OwidException} where the OWID, the scheme, the
+     * domain or the transport is not usable. Nothing is thrown from the
+     * call itself.</p>
+     *
+     * @param owid      the OWID whose creator key is wanted
+     * @param scheme    the scheme to use, normally {@code https}
+     * @param transport the transport to make the request with
+     * @return the public key in PEM form, through a future
+     */
+    public static CompletableFuture<String> publicKeyPem(Owid owid,
+            String scheme, PublicKeyTransport transport) {
+        String url;
+        try {
+            url = publicKeyUrl(owid, scheme);
+        } catch (OwidException e) {
+            return failed(e);
+        }
+        return publicKeyPemAtUrl(url, owid.getDomain(), transport);
     }
 
     /**
      * Asks whether the signature on the OWID is genuine, fetching the key
-     * that was in force when the OWID was signed from the creator domain.
+     * that was in force when the OWID was signed from the creator domain
+     * using {@link HttpUrlConnectionTransport} on its shared pool.
      *
-     * <p>A key that cannot be fetched is
+     * <p>Returns at once, and the future never fails, because every route
+     * out of the fetch promises a status. A key that cannot be fetched is
      * {@link OwidSignatureStatus#KEY_UNAVAILABLE} and one that arrives in a
      * form this library cannot read is
      * {@link OwidSignatureStatus#INVALID_KEY}. Neither is
      * {@link OwidSignatureStatus#SIGNATURE_INVALID}, because an outage or a
      * badly served key leaves the signature unjudged, and reporting either
-     * as invalid would read as an attack.</p>
+     * as invalid would read as an attack. The signature is examined on the
+     * thread that completes the fetch, which for the default transport is
+     * one of its pool, or on the caller's own thread where the key is
+     * already held.</p>
      *
      * @param owid   the OWID to check
      * @param scheme the scheme to use, normally {@code https}
-     * @param others the other OWIDs that were signed together with this one,
-     *               in the same order as when signed
-     * @return the outcome of the check
+     * @return the outcome of the check, through a future
      */
-    public static OwidVerificationResult verify(Owid owid, String scheme,
-            List<Owid> others) {
+    public static CompletableFuture<OwidVerificationResult> verify(Owid owid,
+            String scheme) {
+        return verify(owid, scheme, DEFAULT_TRANSPORT);
+    }
+
+    /**
+     * Asks whether the signature on the OWID is genuine, fetching the key
+     * that was in force when the OWID was signed from the creator domain
+     * using the transport given.
+     *
+     * <p>Returns at once, and the future never fails, because every route
+     * out of the fetch promises a status. A key that cannot be fetched, a
+     * URL that cannot be built and a transport that is missing are all
+     * {@link OwidSignatureStatus#KEY_UNAVAILABLE}, and a key that arrives in
+     * a form this library cannot read is
+     * {@link OwidSignatureStatus#INVALID_KEY}. Neither is
+     * {@link OwidSignatureStatus#SIGNATURE_INVALID}, because an outage or a
+     * badly served key leaves the signature unjudged, and reporting either
+     * as invalid would read as an attack. The signature is examined on the
+     * thread that completes the fetch, or on the caller's own thread where
+     * the key is already held.</p>
+     *
+     * @param owid      the OWID to check
+     * @param scheme    the scheme to use, normally {@code https}
+     * @param transport the transport to make the request with
+     * @return the outcome of the check, through a future
+     */
+    public static CompletableFuture<OwidVerificationResult> verify(Owid owid,
+            String scheme, PublicKeyTransport transport) {
         String url;
         try {
             url = publicKeyUrl(owid, scheme);
         } catch (OwidException e) {
-            return OwidVerificationResult.of(
-                    OwidSignatureStatus.KEY_UNAVAILABLE);
+            return CompletableFuture.completedFuture(
+                    OwidVerificationResult.of(
+                            OwidSignatureStatus.KEY_UNAVAILABLE));
         }
-        return verifyAtUrl(owid, url, others);
+        return verifyAtUrl(owid, url, transport);
     }
 
     /**
-     * Empties the cache of keys already fetched. Provided so that a long
-     * running process can release the memory, and so that a test can start
-     * from a known state.
+     * Empties the cache of keys already fetched, and forgets the requests
+     * under way so that the next caller for any key starts a request of its
+     * own. A request already under way is not stopped and still completes
+     * for whoever holds its future. This is how a long running process drops
+     * a key it has learned it should no longer trust, after a creator
+     * rotates its key following a compromise, and how a test starts from a
+     * known state.
      */
     public static void clearCache() {
-        CACHE.clear();
-    }
-
-    /**
-     * The work {@link #verify(Owid, String, List)} does once the URL is
-     * known, kept apart so that the tests drive the real fetch against a key
-     * end point the tests can stand up locally rather than against a near
-     * copy of the fetch.
-     */
-    static OwidVerificationResult verifyAtUrl(Owid owid, String url,
-            List<Owid> others) {
-        String pem;
-        try {
-            pem = publicKeyPemAtUrl(url, owid.getDomain());
-        } catch (PublicKeyFetchException e) {
-            return OwidVerificationResult.of(e.getStatus());
-        } catch (OwidException e) {
-            return OwidVerificationResult.of(
-                    OwidSignatureStatus.KEY_UNAVAILABLE);
-        }
-        return owid.verify(pem, others);
-    }
-
-    /**
-     * Fetches the PEM at the URL, answering from the cache where the same
-     * URL has already been fetched.
-     */
-    static String publicKeyPemAtUrl(String url, String domain)
-            throws OwidException {
-        String cached = CACHE.get(url);
-        if (cached != null) {
-            return cached;
-        }
-        String pem = read(url, domain);
-        if (CACHE.size() >= MAXIMUM_CACHED_KEYS) {
+        synchronized (LOCK) {
             CACHE.clear();
+            heldKeys = 0;
+            IN_FLIGHT.clear();
         }
-        CACHE.put(url, pem);
-        return pem;
     }
 
-    /** Performs the request and returns the body as text. */
-    private static String read(String url, String domain)
-            throws OwidException {
-        HttpURLConnection connection = null;
+    /** How many keys the cache holds, for the tests. */
+    static int cachedKeyCount() {
+        synchronized (LOCK) {
+            return heldKeys;
+        }
+    }
+
+    /**
+     * The work {@link #verify(Owid, String, PublicKeyTransport)} does once
+     * the URL is known, kept apart so that the tests drive the real
+     * fetch against a key end point the tests can stand up locally rather
+     * than against a near copy of the fetch.
+     *
+     * <p>The signature is checked under the key the end point serves for the
+     * OWID's own minute, and under the neighbouring key where that minute is
+     * within the clock drift allowance of an edge of the span the creator
+     * stated. A key the creator says was not in force at the OWID's minute
+     * proves nothing about the identifier, so where nothing verifies under
+     * such a key the answer is that the key is unavailable and not that the
+     * signature does not match.</p>
+     */
+    static CompletableFuture<OwidVerificationResult> verifyAtUrl(
+            final Owid owid, final String url,
+            final PublicKeyTransport transport) {
+        final long minute = Io.minutesSinceBase(owid.getDate());
+        return keyAtUrl(url, owid.getDomain(), transport)
+                .handle((answer, failure) -> {
+                    if (failure != null) {
+                        return CompletableFuture.completedFuture(
+                                OwidVerificationResult.of(statusOf(failure)));
+                    }
+                    OwidVerificationResult result = owid.verify(answer.pem);
+                    if (result.getStatus()
+                            != OwidSignatureStatus.SIGNATURE_INVALID
+                            || minute < 0) {
+                        return CompletableFuture.completedFuture(result);
+                    }
+                    return neighbourVerifies(owid, minute, url, answer,
+                            transport).thenApply(verified -> {
+                                if (verified) {
+                                    return OwidVerificationResult.of(
+                                            OwidSignatureStatus.SIGNATURE_VALID);
+                                }
+                                if (answer.known
+                                        && answer.covers(minute) == false) {
+                                    return OwidVerificationResult.of(
+                                            OwidSignatureStatus.KEY_UNAVAILABLE);
+                                }
+                                return result;
+                            });
+                })
+                .thenCompose(future -> future);
+    }
+
+    /**
+     * Whether a key neighbouring the one the OWID's own minute selected
+     * verifies the signature instead.
+     *
+     * <p>A creator's signing machines may not agree with its own schedule to
+     * the minute, so an identifier dated just after a key started may have
+     * been signed with the key before it, and one dated just before may have
+     * been signed with the key after. Where the signature does not verify
+     * under the key selected and the OWID's minute is within the clock drift
+     * allowance of an edge of the span the creator stated for that key, the
+     * key for the minute just beyond that edge is asked for and tried. A key
+     * already held for that minute is not asked for again, and a neighbour
+     * that turns out to be the same key is not tried again. A creator that
+     * stated no span has one key and no schedule, so there is no neighbour
+     * to try. This costs at most two more requests, and only for a signature
+     * that has already failed.</p>
+     */
+    private static CompletableFuture<Boolean> neighbourVerifies(
+            final Owid owid, long minute, String url, final KeyAnswer tried,
+            PublicKeyTransport transport) {
+        if (tried.known == false) {
+            return CompletableFuture.completedFuture(false);
+        }
+        List<Long> beyond = new ArrayList<Long>(2);
+        if (tried.first > 0 && nearEdge(minute, tried.first)) {
+            beyond.add(tried.first - 1);
+        }
+        if (tried.last < MAXIMUM_MINUTE && nearEdge(minute, tried.last)) {
+            beyond.add(tried.last + 1);
+        }
+        final String endPoint = endPointOf(url);
+        CompletableFuture<Boolean> verified =
+                CompletableFuture.completedFuture(false);
+        for (final long at : beyond) {
+            verified = verified.thenCompose(already -> {
+                if (already) {
+                    return CompletableFuture.completedFuture(true);
+                }
+                return keyAtUrl(endPoint + "?date=" + at + "&format="
+                        + PublicKeyResponse.SPKI_FORMAT,
+                        owid.getDomain(), transport)
+                        .handle((neighbour, failure) -> failure == null
+                                && neighbour.pem.equals(tried.pem) == false
+                                && owid.verify(neighbour.pem).getStatus()
+                                        == OwidSignatureStatus.SIGNATURE_VALID);
+            });
+        }
+        return verified;
+    }
+
+    /**
+     * Whether the minute is no further from the edge minute than the clocks
+     * of a creator's signing machines are allowed to differ from its
+     * schedule.
+     */
+    private static boolean nearEdge(long minute, long edge) {
+        return Math.abs(minute - edge) <= CLOCK_DRIFT_ALLOWANCE_MINUTES;
+    }
+
+    /**
+     * Fetches the PEM at the URL. See {@link #keyAtUrl}.
+     */
+    static CompletableFuture<String> publicKeyPemAtUrl(String url,
+            String domain, PublicKeyTransport transport) {
+        return keyAtUrl(url, domain, transport).thenApply(answer -> answer.pem);
+    }
+
+    /**
+     * Fetches the key the URL asks for, with the span it is known to cover.
+     * Answered from the cache where a held key is known to cover the minute
+     * the URL names, from a request already under way for the same URL where
+     * there is one, and otherwise through the transport. The creator's
+     * answer states the moments the key is valid from and to, so the whole
+     * span is held from that one answer.
+     *
+     * <p>The future held for a request under way is this class's own rather
+     * than the transport's, so that the transport's completion can be
+     * watched, the answer read and held, and a failure forgotten, all before
+     * the callers waiting are answered.</p>
+     */
+    static CompletableFuture<KeyAnswer> keyAtUrl(final String url,
+            final String domain, PublicKeyTransport transport) {
+        if (transport == null) {
+            return failed(new OwidException("the transport is missing"));
+        }
+        final String endPoint = endPointOf(url);
+        final CompletableFuture<KeyAnswer> fetch;
+        synchronized (LOCK) {
+            KeyAnswer held = heldFor(endPoint, url);
+            if (held != null) {
+                return CompletableFuture.completedFuture(held);
+            }
+            CompletableFuture<KeyAnswer> shared = IN_FLIGHT.get(url);
+            if (shared != null) {
+                // Another caller asked for the same key and its fetch is
+                // the one both callers share.
+                return shared;
+            }
+            fetch = new CompletableFuture<KeyAnswer>();
+            IN_FLIGHT.put(url, fetch);
+        }
+        CompletableFuture<String> started;
         try {
-            URLConnection opened = new URL(url).openConnection();
-            if ((opened instanceof HttpURLConnection) == false) {
-                // A scheme the caller chose that does not make an HTTP
-                // request, such as file. Reported as a key that could not be
-                // obtained rather than allowed to escape as a cast failure,
-                // because every route into this class promises a status.
-                throw new PublicKeyFetchException(
-                        "the scheme used for domain " + quoted(domain)
-                                + " does not make an HTTP request",
-                        OwidSignatureStatus.KEY_UNAVAILABLE,
-                        domain,
-                        0,
-                        null);
+            started = transport.fetch(url, domain);
+        } catch (RuntimeException e) {
+            // A transport keeps its promise by failing the future rather
+            // than throwing, but one that breaks the promise must not leave
+            // a future among the requests under way that never completes.
+            started = failed(e);
+        }
+        if (started == null) {
+            started = failed(new PublicKeyFetchException(
+                    "the transport returned no future for domain '" + domain
+                            + "'",
+                    OwidSignatureStatus.KEY_UNAVAILABLE, domain, 0, null));
+        }
+        started.whenComplete((body, failure) -> {
+            if (failure == null && body != null) {
+                KeyAnswer answer;
+                try {
+                    answer = readAnswer(body, domain, endPoint, url);
+                } catch (PublicKeyFetchException unreadable) {
+                    synchronized (LOCK) {
+                        forget(url, fetch);
+                    }
+                    fetch.completeExceptionally(unreadable);
+                    return;
+                }
+                synchronized (LOCK) {
+                    forget(url, fetch);
+                }
+                fetch.complete(answer);
+                return;
             }
-            connection = (HttpURLConnection) opened;
-            // Never follow a redirect. HttpURLConnection follows one to
-            // any other host by default, so a creator whose domain
-            // answered 302 to some other place would have that other
-            // place's key trusted as its own, and a network attacker able
-            // to bend the creator's DNS, or a creator that was simply
-            // misconfigured, could put a key there and have forgeries
-            // verify. Left alone, the 3xx is the response code, and the
-            // check below reads it as the key being unavailable, which it
-            // is.
-            connection.setInstanceFollowRedirects(false);
-            connection.setRequestMethod("GET");
-            connection.setConnectTimeout(CONNECT_TIMEOUT_MILLISECONDS);
-            connection.setReadTimeout(READ_TIMEOUT_MILLISECONDS);
-            connection.setRequestProperty("Accept", "text/plain");
-            int code = connection.getResponseCode();
-            if (code != HttpURLConnection.HTTP_OK) {
-                drain(connection.getErrorStream());
-                throw new PublicKeyFetchException(
-                        "domain " + quoted(domain) + " returned code '" + code
-                                + "' for the public key",
-                        OwidSignatureStatus.KEY_UNAVAILABLE,
-                        domain,
-                        code,
-                        null);
+            synchronized (LOCK) {
+                forget(url, fetch);
             }
-            InputStream body = connection.getInputStream();
-            try {
-                return new String(readAll(body), StandardCharsets.UTF_8);
-            } finally {
-                body.close();
-            }
-        } catch (IOException e) {
-            // A refused connection, a name that does not resolve and a
-            // timeout all arrive here, and all of them mean the signature
-            // was never examined.
+            fetch.completeExceptionally(failure != null
+                    ? unwrap(failure)
+                    : new PublicKeyFetchException(
+                            "the transport returned no key for domain '"
+                                    + domain + "'",
+                            OwidSignatureStatus.KEY_UNAVAILABLE, domain, 0,
+                            null));
+        });
+        return fetch;
+    }
+
+    /**
+     * Reads a public key answer and holds the key it carries against the
+     * span it states, or against the minute asked about where it states
+     * none. An answer that is not the JSON form the specification requires,
+     * the PEM alone among the other forms, that states a format this library
+     * does not read, or that fails the checks a creator applies before
+     * sending it, is reported as a key that cannot be read.
+     */
+    private static KeyAnswer readAnswer(String body, String domain,
+            String endPoint, String url) throws PublicKeyFetchException {
+        PublicKeyResponse answer;
+        try {
+            answer = PublicKeyResponse.parse(body);
+            answer.validate(null);
+        } catch (OwidException e) {
             throw new PublicKeyFetchException(
-                    "the public key could not be fetched from domain "
-                            + quoted(domain),
-                    OwidSignatureStatus.KEY_UNAVAILABLE,
-                    domain,
-                    0,
-                    e);
-        } finally {
-            if (connection != null) {
-                connection.disconnect();
-            }
+                    "domain " + quoted(domain) + " answered with a public key "
+                            + "answer that is not valid: " + e.getMessage(),
+                    OwidSignatureStatus.INVALID_KEY, domain, 0, e);
+        }
+        synchronized (LOCK) {
+            return hold(endPoint, url, answer.getPublicKey(),
+                    minutesOrNull(answer.getValidFrom()),
+                    minutesOrNull(answer.getValidTo()));
         }
     }
 
-    /** The value in single quotes, for a message. */
+    /** The moment as minutes since the base date, or null. */
+    private static Long minutesOrNull(Instant moment) {
+        if (moment == null) {
+            return null;
+        }
+        long minutes = Io.minutesSinceBase(moment);
+        return minutes < 0 ? null : Long.valueOf(minutes);
+    }
+
     private static String quoted(String value) {
         return "'" + value + "'";
     }
 
-    /** Reads a stream to its end. */
-    private static byte[] readAll(InputStream stream) throws IOException {
-        ByteArrayOutputStream buffer = new ByteArrayOutputStream();
-        byte[] block = new byte[4096];
-        int read = stream.read(block);
-        while (read > 0) {
-            buffer.write(block, 0, read);
-            read = stream.read(block);
+    /**
+     * Removes the request from those under way. Only this request is
+     * removed, never whatever replaced it after the cache was emptied and a
+     * fresh request started for the same URL in the meantime. Called under
+     * the lock.
+     */
+    private static void forget(String url, CompletableFuture<KeyAnswer> fetch) {
+        if (IN_FLIGHT.get(url) == fetch) {
+            IN_FLIGHT.remove(url);
         }
-        return buffer.toByteArray();
     }
 
-    /** Closes the error body of a refused request, where there is one. */
-    private static void drain(InputStream stream) {
-        if (stream == null) {
-            return;
+    /**
+     * The key URL without its query, which names the scheme, the creator and
+     * the version, and so the key end point being asked.
+     */
+    private static String endPointOf(String url) {
+        int query = url.indexOf('?');
+        return query < 0 ? url : url.substring(0, query);
+    }
+
+    /**
+     * The minute the URL asks about, or {@link #NO_MINUTE} where it names
+     * none.
+     */
+    private static long minuteOf(String url) {
+        int query = url.indexOf('?');
+        if (query < 0) {
+            return NO_MINUTE;
         }
-        try {
-            stream.close();
-        } catch (IOException e) {
-            // Nothing useful can be done about a body that will not close,
-            // and the refusal itself is what the caller is told about.
+        for (String pair : url.substring(query + 1).split("&")) {
+            if (pair.startsWith("date=")) {
+                try {
+                    long minute = Long.parseLong(pair.substring(5));
+                    return minute < 0 ? NO_MINUTE : minute;
+                } catch (NumberFormatException notANumber) {
+                    return NO_MINUTE;
+                }
+            }
         }
+        return NO_MINUTE;
+    }
+
+    /**
+     * Whether the minute lies within the clock drift allowance of now or
+     * later, which is a minute a creator that does not state its spans may
+     * have read as its present rather than as the minute named.
+     */
+    private static boolean recent(long minute) {
+        return minute > Io.minutesSinceBase(Instant.now())
+                - CLOCK_DRIFT_ALLOWANCE_MINUTES;
+    }
+
+    /**
+     * The key held for the end point that is known to cover the minute the
+     * URL asks about, or null where none is. Called under the lock.
+     *
+     * <p>A minute within the drift allowance of now is only served where the
+     * creator itself stated the span, because a span confirmed minute by
+     * minute says nothing certain about such a minute.</p>
+     */
+    private static KeyAnswer heldFor(String endPoint, String url) {
+        long minute = minuteOf(url);
+        if (minute == NO_MINUTE) {
+            return null;
+        }
+        List<HeldKey> keys = CACHE.get(endPoint);
+        if (keys != null) {
+            boolean recent = recent(minute);
+            for (HeldKey key : keys) {
+                if (key.covers(minute) && (key.explicit || recent == false)) {
+                    return statedFor(key);
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
+     * The span the creator stated for a held key, which is the whole held
+     * span where the creator stated it, runs to the last minute there is
+     * where the creator stated a start and no end, and is nothing where the
+     * creator stated no span.
+     */
+    private static KeyAnswer statedFor(HeldKey key) {
+        if (key.explicit) {
+            return new KeyAnswer(key.pem, key.first, key.last, true);
+        }
+        if (key.openEnded) {
+            return new KeyAnswer(key.pem, key.first, MAXIMUM_MINUTE, true);
+        }
+        return KeyAnswer.unknown(key.pem);
+    }
+
+    /**
+     * The span the creator stated in its answer. See
+     * {@link #statedFor(HeldKey)}.
+     */
+    private static KeyAnswer stated(String pem, Long start, Long end) {
+        if (start == null) {
+            return KeyAnswer.unknown(pem);
+        }
+        if (end != null && end > start) {
+            return new KeyAnswer(pem, start, end - 1, true);
+        }
+        return new KeyAnswer(pem, start, MAXIMUM_MINUTE, true);
+    }
+
+    /**
+     * Records the creator's answer to the URL, being the key and, where the
+     * creator stated it, the span the key covers as the minute it came into
+     * force and the minute the next key starts. Returns the key with the span
+     * the creator stated for it. Called under the lock.
+     *
+     * <p>With both the start and the end the whole span is held as the
+     * creator's own statement. With the start alone the key is held from the
+     * start up to the drift allowance behind now, because no later key can
+     * have started before then. With neither the minute asked about is held
+     * on its own, as long as it is not within the drift allowance of now. A
+     * key already held for the end point has its span widened to take in the
+     * new one. A key not held before is added, emptying the cache first when
+     * it is full, because the cache must not grow on the input of whoever
+     * presents the identifiers.</p>
+     */
+    private static KeyAnswer hold(String endPoint, String url, String pem,
+            Long start, Long end) {
+        KeyAnswer stated = stated(pem, start, end);
+        long minute = minuteOf(url);
+        long first;
+        long last;
+        boolean explicit = false;
+        boolean openEnded = false;
+        if (start != null && end != null && end > start) {
+            first = start;
+            last = end - 1;
+            explicit = true;
+        } else if (start != null) {
+            first = start;
+            last = Math.max(start, Io.minutesSinceBase(Instant.now())
+                    - CLOCK_DRIFT_ALLOWANCE_MINUTES);
+            openEnded = true;
+        } else if (minute != NO_MINUTE && recent(minute) == false) {
+            first = minute;
+            last = minute;
+        } else {
+            return stated;
+        }
+        List<HeldKey> keys = CACHE.get(endPoint);
+        if (keys != null) {
+            for (HeldKey key : keys) {
+                if (key.pem.equals(pem)) {
+                    if (widen(keys, key, first, last)) {
+                        key.explicit = key.explicit || explicit;
+                        key.openEnded = key.explicit == false
+                                && (key.openEnded || openEnded);
+                    }
+                    // Where the span was not widened the creator has
+                    // answered with another key inside it before, which it
+                    // does not do unless it went back to a key it had left,
+                    // and nothing more is held about this key.
+                    return stated;
+                }
+            }
+            for (HeldKey other : keys) {
+                if (other.last >= first && other.first <= last) {
+                    return stated;
+                }
+            }
+        }
+        if (heldKeys >= MAXIMUM_CACHED_KEYS) {
+            CACHE.clear();
+            heldKeys = 0;
+            keys = null;
+        }
+        if (keys == null) {
+            keys = new ArrayList<HeldKey>();
+            CACHE.put(endPoint, keys);
+        }
+        keys.add(new HeldKey(pem, first, last, explicit, openEnded));
+        heldKeys++;
+        return stated;
+    }
+
+    /**
+     * Widens the span of a held key to take in the span given, and says
+     * whether it did.
+     *
+     * <p>The span is not widened across a minute the creator has answered
+     * with another key for, because that would mean the creator had gone
+     * back to a key it had left, and the minutes between the two spans are
+     * then not this key's to claim.</p>
+     */
+    private static boolean widen(List<HeldKey> keys, HeldKey key, long first,
+            long last) {
+        first = Math.min(first, key.first);
+        last = Math.max(last, key.last);
+        for (HeldKey other : keys) {
+            if (other != key && other.last >= first && other.first <= last) {
+                return false;
+            }
+        }
+        key.first = first;
+        key.last = last;
+        return true;
+    }
+
+    /** A future that has already failed with the exception given. */
+    private static <T> CompletableFuture<T> failed(Throwable failure) {
+        CompletableFuture<T> future = new CompletableFuture<T>();
+        future.completeExceptionally(failure);
+        return future;
+    }
+
+    /**
+     * The exception a failed future carries, with the wrapper a dependent
+     * future adds taken off so the one the transport raised is what a
+     * caller sees.
+     */
+    private static Throwable unwrap(Throwable failure) {
+        Throwable cause = failure;
+        while (cause instanceof CompletionException
+                && cause.getCause() != null) {
+            cause = cause.getCause();
+        }
+        return cause;
+    }
+
+    /**
+     * The status to report for a fetch that failed. A fetch failure carries
+     * its own status, and anything else, such as a URL that could not be
+     * built, means the key was never obtained.
+     */
+    private static OwidSignatureStatus statusOf(Throwable failure) {
+        Throwable cause = unwrap(failure);
+        if (cause instanceof PublicKeyFetchException) {
+            return ((PublicKeyFetchException) cause).getStatus();
+        }
+        return OwidSignatureStatus.KEY_UNAVAILABLE;
     }
 
     /**

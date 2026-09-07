@@ -27,7 +27,6 @@ import java.lang.management.ManagementFactory;
 import java.lang.management.ThreadMXBean;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
-import java.util.Collections;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -221,7 +220,7 @@ class DomainLengthTest {
         assertEquals(domain, parsed.getDomain(),
                 "should round trip the domain the creator holds");
         assertEquals(signed, parsed, "should parse to an equal OWID");
-        assertTrue(parsed.verifyWithCrypto(crypto, Collections.emptyList()),
+        assertTrue(parsed.verifyWithCrypto(crypto),
                 "the parsed OWID should still verify");
     }
 
@@ -272,8 +271,7 @@ class DomainLengthTest {
 
         OwidException thrown = assertThrows(OwidException.class,
                 () -> Owid.dataForCrypto(Version.current(), domain,
-                        Io.baseDate(), PAYLOAD,
-                        Collections.<Owid>emptyList()),
+                        Io.baseDate(), PAYLOAD),
                 "should refuse to assemble the bytes that would be signed");
 
         assertNamesMaximum(thrown);
@@ -320,7 +318,7 @@ class DomainLengthTest {
         assertEquals("51d.es", parsed.getDomain(),
                 "should read the domain the library wrote");
         assertEquals(original, parsed, "should parse to an equal OWID");
-        assertTrue(parsed.verifyWithCrypto(crypto, Collections.emptyList()),
+        assertTrue(parsed.verifyWithCrypto(crypto),
                 "the parsed OWID should still verify");
     }
 }

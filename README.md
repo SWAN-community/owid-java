@@ -8,10 +8,9 @@ pure Java with no external runtime dependencies.
 ## Overview
 
 An OWID records that the entity operating a domain captured or generated a
-payload at a date and time, with an ECDSA signature over the OWID and any
-other OWIDs it was signed together with. OWIDs chain together to form
-verifiable trees. The cryptography is ECDSA on the NIST P-256 curve (also
-known as secp256r1 or prime256v1) with the SHA-256 hash.
+payload at a date and time, with an ECDSA signature over the OWID. The
+cryptography is ECDSA on the NIST P-256 curve (also known as secp256r1 or
+prime256v1) with the SHA-256 hash.
 
 Read the [OWID project](https://github.com/SWAN-community/owid) to learn more
 about the concepts before looking into this implementation. This library
@@ -33,7 +32,10 @@ creates, signs, serializes, and verifies OWIDs.
   to any web framework.
 - Fetching the public key of another creator uses `HttpURLConnection` from
   the JDK, so verifying over the network adds no dependency and still runs on
-  Java 8.
+  Java 8. Every method that reaches the network answers with a
+  `CompletableFuture`, and the blocking connection runs on a background
+  thread. A transport over `java.net.http.HttpClient.sendAsync` can be
+  supplied on Java 11 and later.
 
 ## Payload size and application limits
 
@@ -103,8 +105,6 @@ import com.swancommunity.owid.Crypto;
 import com.swancommunity.owid.Owid;
 import com.swancommunity.owid.OwidParseResult;
 
-import java.util.Collections;
-
 // The creator operates a domain and holds the signing keys.
 Crypto crypto = Crypto.generate();
 Creator creator = Creator.create("example.com", crypto);
@@ -122,24 +122,11 @@ OwidParseResult result = Owid.parse(encoded);
 if (result.isSuccess()) {
     Owid copy = result.getValue();
     String publicPem = crypto.publicKeyPem();
-    boolean valid = copy.verifyWithPublicKey(
-        publicPem, Collections.<Owid>emptyList());
+    boolean valid = copy.verifyWithPublicKey(publicPem);
 } else {
     // result.getStatus() names which of the expected problems it was, and
     // result.getValue() is null.
 }
-```
-
-Chaining covers other OWIDs with the same signature. The same others, in the
-same order, must be supplied when verifying as were supplied when signing.
-
-```java
-Owid root = creator.createString("root");
-Owid party = creator.createString("party", Collections.singletonList(root));
-
-// Verifies with the root as the single other, fails without it.
-party.verifyWithCrypto(crypto, Collections.singletonList(root)); // true
-party.verifyWithCrypto(crypto, Collections.<Owid>emptyList());   // false
 ```
 
 ## Verifying an identifier signed in an earlier week
@@ -151,23 +138,70 @@ anything older than a few days means asking for the key that was in force on
 the date the identifier carries.
 
 `PublicKeyFetch` asks the creator for that key. The request is
-`/owid/api/v{n}/public-key?date={minutes}&format=pkcs`, where the version in
+`/owid/api/v{n}/public-key?date={minutes}&format=spki`, where the version in
 the path is the version byte of the identifier being checked and the minutes
 are counted from 2020-01-01 in the same way the identifier stores its date. A
 creator that ignores the parameter returns its current key, so every
 identifier it signed under an earlier key reads as not matching, which is why
-a creator that rotates its key has to honour the date. Keys already fetched
-are held against the URL they came from, which names the domain, the version
-and the minute, up to 1024 of them before the store is emptied, and
-`clearCache` empties it on demand.
+a creator that rotates its key has to honour the date.
+
+Keys fetched from a creator are held in memory. The request names the minute
+the identifier was created, so a creator that rotates its key answers with the
+key in force then, and the answer is the JSON form, which carries the moments
+the key is valid from and to as well as the key. A creator built on this
+library states both, so the whole span is held from one answer and an
+identifier dated anywhere in it is verified without a request whatever the
+clock drift. An answer that states the start alone is held from the start up
+to fifteen minutes behind now, because no later key can have started before
+then. An answer that states no span comes from a creator with one key and no
+schedule, and is held against the minute asked about and every minute between
+two such answers for the same key, but never for a minute within fifteen
+minutes of now, because a creator whose clock differs from this one's may have
+read that minute as its present rather than as the minute named. The PEM alone
+as text is not a valid answer and is refused. A signature that does not verify
+under the key selected, where the identifier is dated within fifteen minutes
+of an edge of the span the creator stated for that key, is checked against the
+key for the minute just beyond that edge before it is reported as not
+matching, because a creator's signing machines may not agree with its schedule
+to the minute. Where the creator's own statement puts the identifier's date
+outside the span of the key it answered with and nothing verifies, the key is
+reported as unavailable rather than the signature as not matching, because a
+key that was not in force proves nothing about the identifier. Live
+identifiers from a creator that states its spans cost one request per key,
+and older ones cost none. At most 1024 keys are held across every creator
+before the store is emptied and filled again, and `clearCache` empties it on
+demand, which is how a long running process drops a key it has learned it
+should no longer trust. Two requests for the same key made while the first is
+still on its way share one request, and a fetch that fails is not held, so the
+next request asks again.
+
+Every method that reaches the network answers with a `CompletableFuture` and
+returns at once. There is no form that waits, so a request thread or an event
+loop is never held while a creator answers, and a caller that wants to wait
+joins the future itself. The request is made by a `PublicKeyTransport`, and
+where none is named `HttpUrlConnectionTransport` is used, which runs the
+JDK's blocking `HttpURLConnection` on a background thread. The pool it uses
+has daemon threads, never more of them than twice the processors available,
+and requests beyond that wait in a queue. An `Executor` of your own can be
+given to its constructor instead. On Java 11 and later supply a transport of
+your own over `java.net.http.HttpClient.sendAsync`, which blocks no thread at
+all. Any transport must never follow a redirect and must request the URL
+exactly as given, for the reasons the interface comment sets out.
 
 ```java
 import com.swancommunity.owid.OwidSignatureStatus;
 import com.swancommunity.owid.OwidVerificationResult;
 import com.swancommunity.owid.PublicKeyFetch;
 
-OwidVerificationResult result = PublicKeyFetch.verify(
-    owid, "https", Collections.<Owid>emptyList());
+import java.util.concurrent.CompletableFuture;
+
+CompletableFuture<OwidVerificationResult> pending =
+        PublicKeyFetch.verify(
+                owid, "https", Collections.<Owid>emptyList());
+// The call returns at once and the request runs on a background
+// thread. Continue from the future, or join it where waiting is
+// acceptable, as it is here.
+OwidVerificationResult result = pending.join();
 if (result.getStatus() == OwidSignatureStatus.KEY_UNAVAILABLE) {
     // The key could not be obtained, so the signature was never examined.
     // Only SIGNATURE_INVALID means the identifier should be distrusted.
@@ -255,7 +289,7 @@ as the outage it is.
 | `INVALID_SIGNATURE_LENGTH` | A signature field of the wrong length reached the check. A consumer cannot produce one, because reading and creation both settle the signature at 64 bytes. |
 | `KEY_UNAVAILABLE` | No key was supplied, or the one supplied cannot verify. |
 | `INVALID_KEY` | Key material arrived and cannot be decoded or used. |
-| `IMPLEMENTATION_CAPACITY_EXCEEDED` | More work than this runtime can hold, which needs an OWID and its chain to approach the two gigabyte limit of a Java array. |
+| `IMPLEMENTATION_CAPACITY_EXCEEDED` | More work than this runtime can hold, which needs an OWID whose payload approaches the two gigabyte limit of a Java array. |
 | `VERIFICATION_ERROR` | The check could not be completed for a reason that is not the identifier's fault. |
 
 ## Reading one OWID out of something longer
@@ -336,7 +370,7 @@ copies, because a Java byte array is mutable.
 | `new Owid()`, then `setPayload`, then `creator.sign(owid)` | `creator.createBytes(payload)` |
 | `creator.signString(value)` | `creator.createString(value)` |
 | `creator.signBytes(value)` | `creator.createBytes(value)` |
-| `new Owid()`, then `creator.signWithOthers(owid, others)` | `creator.createBytes(payload, others)` |
+| `new Owid()`, then `creator.signWithOthers(owid, others)` | no replacement, a signature covers the OWID alone |
 | `owid.setVersion`, `setDomain`, `setDate`, `setPayload` | no replacement, the state is read only |
 | `Version.fromByte(b)` | no replacement, an unknown version byte is `UNSUPPORTED_VERSION` from a read, and version zero is `ABSENT_NODE` |
 
@@ -362,8 +396,8 @@ domain, a null payload, or a field that cannot be serialized.
     returns zero padded lower case hexadecimal with no separator.
     `payloadAsBase64` returns the payload as base 64. `getPayloadLength`
     reports the payload size without copying it.
-  - `verifyWithCrypto` and `verifyWithPublicKey` return whether the signature,
-    covering this OWID and any others provided, is valid.
+  - `verifyWithCrypto` and `verifyWithPublicKey` return whether the signature
+    is valid.
   - `verify`, taking either the `Crypto` or the public key PEM, answers the
     same question with a status, keeping a key that could not be used apart
     from a signature that does not match.
@@ -381,18 +415,40 @@ domain, a null payload, or a field that cannot be serialized.
 - `Creator` binds a domain to a signing `Crypto`.
   - `createString` and `createBytes` create a complete signed OWID, setting
     the domain to the creator domain, the date to the current time and the
-    version to the current version. Both take an optional list of other OWIDs
-    to cover with the same signature.
+    version to the current version.
 - `PublicKeyFetch` obtains the key of another creator from the well known end
   point on the domain the OWID carries.
   - `publicKeyUrl` builds the request, naming the version of the OWID and the
     minute the OWID was signed.
-  - `publicKeyPem` returns the key, raising `PublicKeyFetchException`, which
-    carries the status to report, the domain and the response code.
-  - `verify` answers with the status, so a key that could not be fetched is
-    `KEY_UNAVAILABLE`, one that could not be read is `INVALID_KEY`, and
-    neither is mistaken for a signature that does not match.
+  - `publicKeyPem` returns a `CompletableFuture` of the key. The future fails
+    with `PublicKeyFetchException`, which carries the status to report, the
+    domain and the response code, where the key could not be obtained.
+  - `verify` returns a `CompletableFuture` of the status, so a key that
+    could not be fetched is `KEY_UNAVAILABLE`, one that could not be read is
+    `INVALID_KEY`, and neither is mistaken for a signature that does not
+    match. The future never fails.
+  - Both take an optional `PublicKeyTransport`, and use
+    `HttpUrlConnectionTransport` on its shared pool where none is given.
   - `clearCache` empties the keys already fetched.
+  - `Endpoints.publicKeyResponse` and `Endpoints.publicKeyResponseAt` return the
+    JSON body of the public key end point, the key as `publicKey`, the encoding
+    it is in as `format`, and `validFrom` and `validTo`, the UTC moments the key
+    came into force and the next key starts. The one format defined is `spki`,
+    a Subject Public Key Info PEM. It is what a request without a `format`
+    receives, and a request for any other value is answered 400 rather than in
+    an encoding the caller did not ask for. `Endpoints.publicKeyAnswer` builds
+    and checks any such answer so a key that cannot be read or a schedule that
+    contradicts itself is refused before it is sent. `PublicKeyResponse` reads
+    and writes the body, and refuses an answer that states another format. The
+    PEM alone as text is not a valid answer.
+- `PublicKeyTransport` makes the request and answers with a
+  `CompletableFuture` of the body, so a transport over any HTTP client can
+  be supplied. It must never follow a redirect and must request the URL
+  exactly as given.
+- `HttpUrlConnectionTransport` is the transport used where none is named,
+  running `HttpURLConnection` on an `Executor`, either one given to its
+  constructor or a shared pool of daemon threads bounded at twice the
+  processors available.
 - `PublicKeySchedule` holds the keys a creator has published and chooses
   between them.
   - `PublicKeySchedule.of` takes the keys in any order.
@@ -407,10 +463,10 @@ domain, a null payload, or a field that cannot be serialized.
   no generation moment, so nothing can select by one.
 - `Endpoints` provides framework agnostic helpers for the well known end
   points.
-  - `creatorResponse` returns JSON with the fields `domain`, `name`,
-    `publicKeySPKI`, and `contractURL`. The path is `/owid/api/v{n}/creator`.
-  - `publicKeyResponse` returns the PEM. The path is
-    `/owid/api/v{n}/public-key` with a `format` parameter of `spki` or `pkcs`.
+  - `publicKeyResponse` returns the JSON body of the public key end point
+    for a creator with one key and no schedule. The path is
+    `/owid/api/v{n}/public-key` with an optional `format` parameter whose one
+    defined value is `spki`.
 
 ## Data structure notes
 
@@ -461,8 +517,8 @@ mvn test
 ```
 
 The tests round trip the canonical wire format vectors byte for byte, verify
-cross language signed fixtures including the chained case, confirm that a
-flipped signature byte fails verification, and cover the binary write
+cross language signed fixtures, confirm that a flipped signature byte fails
+verification, and cover the binary write
 helpers, the crypto, the creator, and the end point helpers. They also cover
 the parse contract, being every status the reading surfaces report together
 with a run of malformed buffers that must never throw, the framed read and

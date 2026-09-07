@@ -24,14 +24,12 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.Arrays;
 import java.util.Base64;
-import java.util.List;
 
 /**
  * OWID structure which can be used as a node in a tree.
  *
  * <p>An OWID records that the processor operating the domain handled the
- * payload, and any other OWIDs covered by the signature, at the date and time
- * given.</p>
+ * payload at the date and time given.</p>
  *
  * <p>An OWID is only worth anything because it is signed, so a caller cannot
  * build one. An instance reaches calling code by one of two routes, being
@@ -109,7 +107,7 @@ public final class Owid {
      *
      * <p>A successful read says the bytes are a structurally valid OWID. It
      * says nothing about whether the signature is genuine, which is a
-     * separate question answered by {@link #verify(Crypto, List)}.</p>
+     * separate question answered by {@link #verify(Crypto)}.</p>
      *
      * @param value the base 64 encoded OWID, which may be null
      * @return the OWID and {@link OwidParseStatus#PARSED}, or no value and
@@ -281,12 +279,11 @@ public final class Owid {
     }
 
     /**
-     * Builds the byte array used for signing and verification. Contains the
-     * fields of this OWID without the signature, followed by the complete byte
-     * form of each of the others in the order provided.
+     * Builds the byte array used for signing and verification, being the
+     * fields of this OWID without the signature and nothing else.
      */
-    byte[] dataForCrypto(List<Owid> others) throws OwidException {
-        return dataForCrypto(version, domain, date, payload, others);
+    byte[] dataForCrypto() throws OwidException {
+        return dataForCrypto(version, domain, date, payload);
     }
 
     /**
@@ -296,17 +293,10 @@ public final class Owid {
      * then builds the finished OWID in one step.
      */
     static byte[] dataForCrypto(Version version, String domain, Instant date,
-            byte[] payload, List<Owid> others) throws OwidException {
-        int length = byteCount(version, domain, payload, null, false);
-        for (Owid other : others) {
-            length = addLength(length, other.byteCount(true));
-        }
-        ExactByteArrayOutputStream buffer =
-                new ExactByteArrayOutputStream(length);
+            byte[] payload) throws OwidException {
+        ExactByteArrayOutputStream buffer = new ExactByteArrayOutputStream(
+                byteCount(version, domain, payload, null, false));
         writeNoSignature(buffer, version, domain, date, payload);
-        for (Owid other : others) {
-            other.toBuffer(buffer);
-        }
         return buffer.toExactByteArray();
     }
 
@@ -428,38 +418,27 @@ public final class Owid {
     }
 
     /**
-     * Verifies this OWID, and any others that were included when it was
-     * signed, using the crypto instance provided. Pass an empty list for the
-     * others when the OWID was signed on its own.
+     * Verifies this OWID using the crypto instance provided.
      *
      * @param crypto the crypto instance holding the public key
-     * @param others the other OWIDs that were signed together with this one,
-     *               in the same order as when signed
      * @return true if the signature verifies, false otherwise
      * @throws OwidException if the crypto instance cannot verify, or a field
      *                       cannot be encoded
      */
-    public boolean verifyWithCrypto(Crypto crypto, List<Owid> others)
-            throws OwidException {
-        byte[] data = dataForCrypto(others);
-        return crypto.verifyByteArray(data, signature);
+    public boolean verifyWithCrypto(Crypto crypto) throws OwidException {
+        return crypto.verifyByteArray(dataForCrypto(), signature);
     }
 
     /**
-     * Verifies this OWID, and any others that were included when it was
-     * signed, using the public key in SPKI PEM form provided.
+     * Verifies this OWID using the public key in SPKI PEM form provided.
      *
      * @param publicPem the public key in SPKI PEM form
-     * @param others    the other OWIDs that were signed together with this
-     *                  one, in the same order as when signed
      * @return true if the signature verifies, false otherwise
      * @throws OwidException if the PEM is not a valid public key, or a field
      *                       cannot be encoded
      */
-    public boolean verifyWithPublicKey(String publicPem, List<Owid> others)
-            throws OwidException {
-        Crypto crypto = Crypto.newVerifyOnly(publicPem);
-        return verifyWithCrypto(crypto, others);
+    public boolean verifyWithPublicKey(String publicPem) throws OwidException {
+        return verifyWithCrypto(Crypto.newVerifyOnly(publicPem));
     }
 
     /**
@@ -472,11 +451,9 @@ public final class Owid {
      *
      * @param crypto the crypto instance holding the public key, which may be
      *               null when no key could be obtained
-     * @param others the other OWIDs that were signed together with this one,
-     *               in the same order as when signed
      * @return the outcome of the check
      */
-    public OwidVerificationResult verify(Crypto crypto, List<Owid> others) {
+    public OwidVerificationResult verify(Crypto crypto) {
         if (crypto == null || crypto.canVerify() == false) {
             return OwidVerificationResult.of(
                     OwidSignatureStatus.KEY_UNAVAILABLE);
@@ -487,7 +464,7 @@ public final class Owid {
         }
         byte[] data;
         try {
-            data = dataForCrypto(others);
+            data = dataForCrypto();
         } catch (CapacityException e) {
             return OwidVerificationResult.of(
                     OwidSignatureStatus.IMPLEMENTATION_CAPACITY_EXCEEDED);
@@ -508,8 +485,8 @@ public final class Owid {
     }
 
     /**
-     * The same question as {@link #verify(Crypto, List)}, starting from the
-     * public key in SPKI PEM form.
+     * The same question as {@link #verify(Crypto)}, starting from the public
+     * key in SPKI PEM form.
      *
      * <p>Key material that cannot be decoded reports
      * {@link OwidSignatureStatus#INVALID_KEY}, because the fault is in the
@@ -517,12 +494,9 @@ public final class Owid {
      *
      * @param publicPem the public key in SPKI PEM form, which may be null
      *                  when no key could be obtained
-     * @param others    the other OWIDs that were signed together with this
-     *                  one, in the same order as when signed
      * @return the outcome of the check
      */
-    public OwidVerificationResult verify(String publicPem,
-            List<Owid> others) {
+    public OwidVerificationResult verify(String publicPem) {
         if (publicPem == null || publicPem.trim().isEmpty()) {
             return OwidVerificationResult.of(
                     OwidSignatureStatus.KEY_UNAVAILABLE);
@@ -534,7 +508,7 @@ public final class Owid {
             return OwidVerificationResult.of(
                     OwidSignatureStatus.INVALID_KEY);
         }
-        return verify(crypto, others);
+        return verify(crypto);
     }
 
     /**

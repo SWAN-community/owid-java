@@ -18,8 +18,11 @@ package com.swancommunity.owid;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.time.Instant;
+import java.util.Collections;
 import org.junit.jupiter.api.Test;
 
 /** Unit tests for the well known end point helpers. */
@@ -31,41 +34,61 @@ class EndpointsTest {
 
     @Test
     void paths() {
-        assertEquals("/owid/api/v3/creator",
-                Endpoints.creatorPath(Version.VERSION3),
-                "should match the creator path");
         assertEquals("/owid/api/v3/public-key",
                 Endpoints.publicKeyPath(Version.VERSION3),
                 "should match the public key path");
     }
 
-    @Test
-    void creatorResponseFields() throws OwidException {
-        Creator creator = newCreator();
-        String body = Endpoints.creatorResponse(creator, "Example Org",
-                "https://example.com/terms");
-        assertTrue(body.contains("\"domain\":\"example.com\""),
-                "should contain the domain");
-        assertTrue(body.contains("\"name\":\"Example Org\""),
-                "should contain the name");
-        assertTrue(body.contains("publicKeySPKI"),
-                "should use the specification field names");
-        assertTrue(body.contains("BEGIN PUBLIC KEY"),
-                "should embed the public key PEM");
-        assertTrue(body.contains("\"contractURL\":\"https://example.com/terms\""),
-                "should contain the contract URL");
-    }
-
+    /**
+     * The format parameter names the encoding of the key in the answer. The
+     * one encoding defined is answered whether or not it is asked for by
+     * name, the answer echoes it, and any other value is refused rather than
+     * answered in an encoding the caller did not ask for.
+     */
     @Test
     void publicKeyResponseFormats() throws OwidException {
         Creator creator = newCreator();
-        for (String format : new String[] {"spki", "pkcs"}) {
+        for (String format : new String[] {"spki", null, ""}) {
             String body = Endpoints.publicKeyResponse(creator, format);
-            assertTrue(body.contains("BEGIN PUBLIC KEY"),
+            PublicKeyResponse answer = PublicKeyResponse.parse(body);
+            assertEquals("spki", answer.getFormat(),
+                    "the answer names the encoding of the key");
+            assertTrue(answer.getPublicKey().contains("BEGIN PUBLIC KEY"),
                     "should return the PEM for format " + format);
+            assertNull(answer.getValidFrom(), "a single key has no schedule");
+            assertNull(answer.getValidTo());
         }
-        assertThrows(OwidException.class,
-                () -> Endpoints.publicKeyResponse(creator, "other"),
-                "should reject an unknown format");
+        for (String format : new String[] {"pkcs", "other"}) {
+            assertThrows(OwidException.class,
+                    () -> Endpoints.publicKeyResponse(creator, format),
+                    "should refuse format " + format);
+        }
+    }
+
+    /**
+     * The scheduled form answers 400 to a format it does not serve, the way
+     * the specification requires of a creator, and answers the one format
+     * defined whether or not the request names it.
+     */
+    @Test
+    void publicKeyResponseAtRefusesAnotherFormat() throws OwidException {
+        Instant now = Instant.parse("2026-09-07T12:00:00Z");
+        PublicKeySchedule schedule = PublicKeySchedule.of(
+                Collections.singletonList(DatedPublicKey.of(
+                        Instant.parse("2026-08-31T00:00:00Z"),
+                        Crypto.generate().subjectPublicKeyInfo())));
+        Endpoints.Response refused = Endpoints.publicKeyResponseAt(schedule,
+                "pkcs", null, now);
+        assertEquals(400, refused.getStatus(),
+                "a format this creator does not serve is a bad request");
+        assertEquals("", refused.getBody());
+        for (String format : new String[] {"spki", null}) {
+            Endpoints.Response served = Endpoints.publicKeyResponseAt(
+                    schedule, format, null, now);
+            assertEquals(200, served.getStatus());
+            assertEquals("spki",
+                    PublicKeyResponse.parse(served.getBody()).getFormat(),
+                    "the answer echoes the one format defined");
+        }
     }
 }

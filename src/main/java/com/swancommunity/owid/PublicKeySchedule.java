@@ -37,9 +37,7 @@ import java.util.List;
  * start is at or before the date asked about. Keys are generated in batches,
  * often many weeks ahead of the weeks the keys cover, so the moment key
  * material was generated says nothing about which key signed anything and is
- * not held here at all. Selecting on a generation moment picks a key that has
- * not started yet and reports a genuine identifier as not matching, which is
- * what the .NET port did before that port was fixed.</p>
+ * not held here at all. Selecting on a generation moment picks a key that has not started yet and reports a genuine identifier as not matching.</p>
  *
  * <p>A date the schedule does not reach, being one earlier than the first
  * start, has no key. That answer is reported as
@@ -142,13 +140,29 @@ public final class PublicKeySchedule {
      * <p>This is not the key in force now. A creator publishes its schedule
      * ahead of time, so the last key by start is usually one whose period
      * has not begun and which has signed nothing yet. The key in force now
-     * is {@link #current()}. Serving the last key where the current one was
-     * meant is the same fault as selecting by the generation moment, being
-     * a key from a period that has not started, and it is the fault the
-     * .NET port carried in its answer to a request that named no date.</p>
+     * is {@link #current()}. Serving the last key where the current one was meant is the same fault as selecting by the generation moment, being a key from a period that has not started.</p>
      *
      * @return the key with the latest start, or null when there are none
      */
+    /**
+     * Returns the earliest start in the schedule after the key's own, being
+     * the moment the key stops being in force, or null where the key is the
+     * last in the schedule and is in force until further notice.
+     *
+     * @param key a key of this schedule
+     * @return the moment the next key starts, or null
+     */
+    public Instant nextStartAfter(DatedPublicKey key) {
+        Instant next = null;
+        for (DatedPublicKey other : keys) {
+            if (other.getStartsAt().isAfter(key.getStartsAt())
+                    && (next == null || other.getStartsAt().isBefore(next))) {
+                next = other.getStartsAt();
+            }
+        }
+        return next;
+    }
+
     public DatedPublicKey last() {
         if (keys.isEmpty()) {
             return null;
@@ -186,14 +200,12 @@ public final class PublicKeySchedule {
      * Asks whether the signature on the OWID is genuine, using the key that
      * was in force when the OWID was signed.
      *
-     * @param owid   the OWID to check
-     * @param others the other OWIDs that were signed together with this one,
-     *               in the same order as when signed
+     * @param owid the OWID to check
      * @return the outcome of the check, which is
      *         {@link OwidSignatureStatus#KEY_UNAVAILABLE} where the schedule
      *         holds no key for the date
      */
-    public OwidVerificationResult verify(Owid owid, List<Owid> others) {
+    public OwidVerificationResult verify(Owid owid) {
         if (owid == null) {
             return OwidVerificationResult.of(
                     OwidSignatureStatus.KEY_UNAVAILABLE);
@@ -203,6 +215,6 @@ public final class PublicKeySchedule {
             return OwidVerificationResult.of(
                     OwidSignatureStatus.KEY_UNAVAILABLE);
         }
-        return owid.verify(key.getPublicKeyPem(), others);
+        return owid.verify(key.getPublicKeyPem());
     }
 }

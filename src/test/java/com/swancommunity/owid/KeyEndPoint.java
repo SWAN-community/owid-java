@@ -65,6 +65,15 @@ final class KeyEndPoint {
         /** The published schedule, chosen by the date requested. */
         SCHEDULE,
 
+        /**
+         * The key alone as JSON with no moments, as a creator with one key
+         * and no schedule answers.
+         */
+        SPANLESS,
+
+        /** The key alone as text, which the specification does not allow. */
+        PEM_ONLY,
+
         /** Text shaped like a PEM that no key can be read out of. */
         BROKEN_KEY,
 
@@ -110,8 +119,9 @@ final class KeyEndPoint {
         server.createContext("/", new HttpHandler() {
             @Override
             public void handle(HttpExchange exchange) throws IOException {
-                String date = parameter(
-                        exchange.getRequestURI().getRawQuery(), "date");
+                String query = exchange.getRequestURI().getRawQuery();
+                String date = parameter(query, "date");
+                String format = parameter(query, "format");
                 endPoint.dates.add(date);
                 if (answer == Answer.REDIRECT) {
                     exchange.getResponseHeaders().set("Location", redirectTo);
@@ -119,24 +129,24 @@ final class KeyEndPoint {
                     exchange.close();
                     return;
                 }
-                String body;
+                Endpoints.Response response;
                 try {
-                    body = body(schedule, answer, date);
-                } catch (NumberFormatException malformed) {
-                    // A date that is not a number is refused, as the cloud
-                    // refuses it, rather than failing inside the handler.
-                    exchange.sendResponseHeaders(400, -1);
+                    response = body(schedule, answer, date, format);
+                } catch (OwidException fault) {
+                    exchange.sendResponseHeaders(500, -1);
                     exchange.close();
                     return;
                 }
-                if (body == null) {
-                    exchange.sendResponseHeaders(404, -1);
+                if (response.getStatus() != 200) {
+                    exchange.sendResponseHeaders(response.getStatus(), -1);
                     exchange.close();
                     return;
                 }
-                byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
-                exchange.getResponseHeaders()
-                        .set("Content-Type", "text/plain");
+                byte[] bytes = response.getBody().getBytes(StandardCharsets.UTF_8);
+                exchange.getResponseHeaders().set("Content-Type",
+                        answer == Answer.PEM_ONLY
+                                ? "text/plain"
+                                : "application/json");
                 exchange.sendResponseHeaders(200, bytes.length);
                 OutputStream stream = exchange.getResponseBody();
                 try {
@@ -178,30 +188,51 @@ final class KeyEndPoint {
         }
     }
 
-    /** The body to serve, or null where the end point has no key. */
-    private static String body(PublicKeySchedule schedule, Answer answer,
-            String date) {
+    /**
+     * The answer for the request, built by the library's own server side
+     * helper so the client is tested against what a creator built on it
+     * sends, honouring the format the request asks for the way the cloud
+     * does. A creator stating no moments, and the key alone as text, are
+     * built here for the tests that need them.
+     */
+    private static Endpoints.Response body(PublicKeySchedule schedule,
+            Answer answer, String date, String format) throws OwidException {
         if (answer == Answer.BROKEN_KEY) {
-            // Shaped like a PEM, with a body no key can be read out of. This
-            // is the 30 August 2026 fault, where the end points served PEM a
-            // strict parser refused and good identifiers went unverified.
-            return "-----BEGIN PUBLIC KEY-----\n"
-                    + "bm90IGEga2V5\n"
-                    + "-----END PUBLIC KEY-----\n";
+            // Shaped like a PEM, with a body no key can be read out of, sent
+            // as the JSON form without the check a creator applies, because
+            // that check is what catches it.
+            return new Endpoints.Response(200,
+                    PublicKeyResponse.of("-----BEGIN PUBLIC KEY-----\n"
+                            + "bm90IGEga2V5\n"
+                            + "-----END PUBLIC KEY-----\n", null, null)
+                            .toJson());
+        }
+        if (answer == Answer.SCHEDULE) {
+            return Endpoints.publicKeyResponseAt(schedule, format, date,
+                    REQUEST_MOMENT);
         }
         Instant asked = REQUEST_MOMENT;
         if (date != null) {
-            asked = Io.baseDate()
-                    .plus(Duration.ofMinutes(Long.parseLong(date)));
+            try {
+                asked = Io.baseDate()
+                        .plus(Duration.ofMinutes(Long.parseLong(date)));
+            } catch (NumberFormatException malformed) {
+                return new Endpoints.Response(400, "");
+            }
             if (asked.isAfter(REQUEST_MOMENT)) {
                 asked = REQUEST_MOMENT;
             }
         }
         DatedPublicKey key = schedule.keyInForce(asked);
         if (key == null) {
-            return null;
+            return new Endpoints.Response(404, "");
         }
-        return key.getPublicKeyPem();
+        if (answer == Answer.PEM_ONLY) {
+            return new Endpoints.Response(200, key.getPublicKeyPem());
+        }
+        return new Endpoints.Response(200,
+                Endpoints.publicKeyAnswer(key.getPublicKeyPem(), null, null,
+                        null));
     }
 
     /** The value of a parameter in a query, or null where there is none. */

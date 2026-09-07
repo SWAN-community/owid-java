@@ -75,8 +75,8 @@ public enum OwidSignatureStatus {
     /**
      * The work required is more than this runtime can hold.
      *
-     * <p>Not covered by a test, because reaching it needs an OWID and its
-     * chain to approach the two gigabyte limit of a Java array, which cannot
+     * <p>Not covered by a test, because reaching it needs an OWID whose
+     * payload approaches the two gigabyte limit of a Java array, which cannot
      * be built in a test suite that has to run on an ordinary machine. The
      * path to it is real, being the overflow guard on the serialized length,
      * which raises a distinct exception so this status does not have to be
