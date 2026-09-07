@@ -740,28 +740,40 @@ class DatedKeyFetchTest {
     }
 
     /**
-     * A date later than now is held against now, because a creator answers
-     * a future date with the key in force now and a key held against a
-     * minute the creator has not spoken for would be served for that minute
-     * after the creator had rotated. Two future dates therefore share one
-     * request, and so does a request with no date.
+     * A minute within the clock drift allowance of now, or later, is asked
+     * about every time and never held, because a creator whose clock differs
+     * from this one's may have read it as its present rather than as the
+     * minute named. A minute beyond the allowance is held as usual. Live
+     * identifiers therefore cost one request per minute per creator, as they
+     * always did, and older ones cost none.
      */
     @Test
-    void aFutureDateIsHeldAgainstNow() throws IOException, OwidException {
+    void aMinuteWithinTheDriftAllowanceIsNotHeld() throws Exception {
         KeyEndPoint endPoint = endPoint(KeyEndPoint.Answer.SCHEDULE);
+        Field field = PublicKeyFetch.class.getDeclaredField(
+                "CLOCK_DRIFT_ALLOWANCE_MINUTES");
+        field.setAccessible(true);
+        long allowance = field.getLong(null);
         long started = Io.minutesSinceBase(Instant.now());
-        long week = 7 * 24 * 60;
-        pemAt(urlFor(endPoint, started + week), KeyFixtures.IDENTIFIER_DOMAIN);
-        pemAt(urlFor(endPoint, started + 2 * week),
+        long recent = started - 1;
+        pemAt(urlFor(endPoint, recent), KeyFixtures.IDENTIFIER_DOMAIN);
+        pemAt(urlFor(endPoint, recent), KeyFixtures.IDENTIFIER_DOMAIN);
+        pemAt(urlFor(endPoint, started + 7 * 24 * 60),
                 KeyFixtures.IDENTIFIER_DOMAIN);
         pemAt(endPoint.base() + "/owid/api/v3/public-key?format=pkcs",
                 KeyFixtures.IDENTIFIER_DOMAIN);
+        long old = started - allowance - 1;
+        pemAt(urlFor(endPoint, old), KeyFixtures.IDENTIFIER_DOMAIN);
+        pemAt(urlFor(endPoint, old), KeyFixtures.IDENTIFIER_DOMAIN);
         assumeTrue(Io.minutesSinceBase(Instant.now()) == started,
                 "the minute changed during the test, so the calls were not "
                         + "all about the same now");
-        assertEquals(1, endPoint.dates().size(),
-                "two future dates and no date are all now, and now was "
-                        + "asked about once");
+        assertEquals(5, endPoint.dates().size(),
+                "the recent minute was asked about twice, the future minute "
+                        + "and the request with no date once each, and the "
+                        + "old minute once with the second call held");
+        assertEquals(1, PublicKeyFetch.cachedKeyCount(),
+                "only the old minute's key is held");
     }
 
     /**
