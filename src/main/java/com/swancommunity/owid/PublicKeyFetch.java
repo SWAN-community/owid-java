@@ -16,11 +16,13 @@
 
 package com.swancommunity.owid;
 
+import java.time.Instant;
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
-import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Fetches the signing public key of a creator from the well known end point
@@ -61,30 +63,79 @@ public final class PublicKeyFetch {
 
     /**
      * The most keys held in the cache before the cache is emptied and filled
-     * again. A bound is needed because a verifier sees identifiers from many
-     * domains and many weeks, and an unbounded map would grow for as long as
-     * the process runs.
+     * again, across every creator. A bound is needed because a verifier sees
+     * identifiers from many domains and many weeks, and an unbounded store
+     * would grow for as long as the process runs.
      */
     private static final int MAXIMUM_CACHED_KEYS = 1024;
 
     /**
-     * Keys fetched, or on their way, held against the URL they were asked
-     * for.
+     * One key a creator has answered with, and the span of minutes the
+     * creator has confirmed it was in force for.
+     *
+     * <p>A creator's key is in force from the start of its period until the
+     * next key starts, so a key the creator confirms at two minutes was in
+     * force at every minute between them. The span grows as the creator
+     * confirms the same key for more minutes, and an identifier dated inside
+     * it is verified without a request.</p>
+     */
+    private static final class HeldKey {
+        /** The key in PEM form, as the creator served it. */
+        final String pem;
+        /** The earliest minute the creator has confirmed the key for. */
+        long first;
+        /** The latest minute the creator has confirmed the key for. */
+        long last;
+
+        HeldKey(String pem, long minute) {
+            this.pem = pem;
+            this.first = minute;
+            this.last = minute;
+        }
+
+        /** Whether the minute lies within the confirmed span. */
+        boolean covers(long minute) {
+            return first <= minute && minute <= last;
+        }
+    }
+
+    /**
+     * Guards {@link #CACHE}, {@link #heldKeys} and {@link #IN_FLIGHT}. Held
+     * across a few map and list operations only, never across a request.
+     */
+    private static final Object LOCK = new Object();
+
+    /**
+     * Keys already fetched, by the creator's key end point, which is the key
+     * URL without its date. Each end point holds the keys the creator has
+     * answered with, each with the span of minutes the creator has confirmed
+     * it for.
      *
      * <p>The specification asks implementations to cache so that verifying
      * many identifiers does not mean repeating requests to another
-     * processor. Holding the key against the whole URL is safe because the
-     * URL names the domain, the version and the minute, and the key a
-     * creator published for a minute in the past does not change.</p>
-     *
-     * <p>The value is the future of the fetch rather than the key itself, so
-     * a second request for a key that is still on its way joins the request
-     * already made instead of making another. A fetch that fails is removed
-     * the moment it fails, so an outage is never remembered and the next
-     * request tries again.</p>
+     * processor. The key URL carries the date of the identifier being
+     * verified, in minutes, and a creator's key changes on the order of a
+     * week. Keyed by the whole URL, as this cache once was, two identifiers
+     * signed a minute apart never shared an entry, so a hundred identifiers
+     * over a hundred minutes made a hundred requests for one key. Keyed by
+     * end point and span, an identifier dated between two minutes the
+     * creator has already answered for is verified without a request.</p>
      */
-    private static final Map<String, CompletableFuture<String>> CACHE =
-            new ConcurrentHashMap<String, CompletableFuture<String>>();
+    private static final Map<String, List<HeldKey>> CACHE =
+            new HashMap<String, List<HeldKey>>();
+
+    /** How many keys are held across every end point. */
+    private static int heldKeys;
+
+    /**
+     * Requests under way, by the dated URL asked for, so that a second
+     * request for a key that is still on its way joins the request already
+     * made instead of making another. An entry is removed the moment its
+     * request ends, whatever the outcome, so a failure is never handed to a
+     * later caller and an outage is never remembered.
+     */
+    private static final Map<String, CompletableFuture<String>> IN_FLIGHT =
+            new HashMap<String, CompletableFuture<String>>();
 
     /** The transport used where the caller names none. */
     private static final PublicKeyTransport DEFAULT_TRANSPORT =
@@ -246,13 +297,27 @@ public final class PublicKeyFetch {
     }
 
     /**
-     * Empties the cache of keys already fetched. Provided so that a long
-     * running process can release the memory, and so that a test can start
-     * from a known state. A fetch still on its way is forgotten here but
-     * still completes for whoever holds its future.
+     * Empties the cache of keys already fetched, and forgets the requests
+     * under way so that the next caller for any key starts a request of its
+     * own. A request already under way is not stopped and still completes
+     * for whoever holds its future. This is how a long running process drops
+     * a key it has learned it should no longer trust, after a creator
+     * rotates its key following a compromise, and how a test starts from a
+     * known state.
      */
     public static void clearCache() {
-        CACHE.clear();
+        synchronized (LOCK) {
+            CACHE.clear();
+            heldKeys = 0;
+            IN_FLIGHT.clear();
+        }
+    }
+
+    /** How many keys the cache holds, for the tests. */
+    static int cachedKeyCount() {
+        synchronized (LOCK) {
+            return heldKeys;
+        }
     }
 
     /**
@@ -274,32 +339,37 @@ public final class PublicKeyFetch {
     }
 
     /**
-     * Fetches the PEM at the URL, answering from the cache where the same
-     * URL has already been fetched or is being fetched now.
+     * Fetches the PEM at the URL. Answered from the cache where the creator
+     * has already confirmed a key for the minute the URL names, from a
+     * request already under way for the same URL where there is one, and
+     * otherwise through the transport.
      *
-     * <p>The future held in the cache is this class's own rather than the
-     * transport's, so that the transport's completion can be watched and a
-     * failure dropped from the cache without touching the map from inside
-     * one of its own operations, which a concurrent map does not allow.</p>
+     * <p>The future held for a request under way is this class's own rather
+     * than the transport's, so that the transport's completion can be
+     * watched, the key held against the minute it was asked for, and a
+     * failure forgotten, all before the callers waiting are answered.</p>
      */
     static CompletableFuture<String> publicKeyPemAtUrl(final String url,
             String domain, PublicKeyTransport transport) {
         if (transport == null) {
             return failed(new OwidException("the transport is missing"));
         }
-        CompletableFuture<String> held = CACHE.get(url);
-        if (held != null) {
-            return held;
-        }
-        if (CACHE.size() >= MAXIMUM_CACHED_KEYS) {
-            CACHE.clear();
-        }
-        final CompletableFuture<String> fetch = new CompletableFuture<String>();
-        held = CACHE.putIfAbsent(url, fetch);
-        if (held != null) {
-            // Another thread asked for the same key between the lookup and
-            // the insert, and its fetch is the one both callers share.
-            return held;
+        final String endPoint = endPointOf(url);
+        final long minute = minuteOf(url);
+        final CompletableFuture<String> fetch;
+        synchronized (LOCK) {
+            String pem = heldPem(endPoint, minute);
+            if (pem != null) {
+                return CompletableFuture.completedFuture(pem);
+            }
+            CompletableFuture<String> held = IN_FLIGHT.get(url);
+            if (held != null) {
+                // Another caller asked for the same key and its fetch is
+                // the one both callers share.
+                return held;
+            }
+            fetch = new CompletableFuture<String>();
+            IN_FLIGHT.put(url, fetch);
         }
         CompletableFuture<String> started;
         try {
@@ -307,7 +377,7 @@ public final class PublicKeyFetch {
         } catch (RuntimeException e) {
             // A transport keeps its promise by failing the future rather
             // than throwing, but one that breaks the promise must not leave
-            // a future in the cache that never completes.
+            // a future among the requests under way that never completes.
             started = failed(e);
         }
         if (started == null) {
@@ -318,12 +388,19 @@ public final class PublicKeyFetch {
         }
         started.whenComplete((pem, failure) -> {
             if (failure == null && pem != null) {
+                // Held before the callers are answered, so a caller arriving
+                // between the two finds the key rather than starting a
+                // request of its own.
+                synchronized (LOCK) {
+                    hold(endPoint, minute, pem);
+                    forget(url, fetch);
+                }
                 fetch.complete(pem);
                 return;
             }
-            // Only this fetch is removed, never whatever replaced it after
-            // the cache was emptied and filled again in the meantime.
-            CACHE.remove(url, fetch);
+            synchronized (LOCK) {
+                forget(url, fetch);
+            }
             fetch.completeExceptionally(failure != null
                     ? unwrap(failure)
                     : new PublicKeyFetchException(
@@ -333,6 +410,137 @@ public final class PublicKeyFetch {
                             null));
         });
         return fetch;
+    }
+
+    /**
+     * Removes the request from those under way. Only this request is
+     * removed, never whatever replaced it after the cache was emptied and a
+     * fresh request started for the same URL in the meantime. Called under
+     * the lock.
+     */
+    private static void forget(String url, CompletableFuture<String> fetch) {
+        if (IN_FLIGHT.get(url) == fetch) {
+            IN_FLIGHT.remove(url);
+        }
+    }
+
+    /**
+     * The key URL without its query, which names the scheme, the creator and
+     * the version, and so the key end point being asked.
+     */
+    private static String endPointOf(String url) {
+        int query = url.indexOf('?');
+        return query < 0 ? url : url.substring(0, query);
+    }
+
+    /**
+     * The minute the cache reads the URL as asking about.
+     *
+     * <p>The date parameter where the URL carries one, and otherwise now,
+     * because a creator answers a request without a date with the key in
+     * force now. A date later than now is read as now as well, because that
+     * is how a creator reads it. A schedule is published ahead of time and a
+     * key that has not started has signed nothing, so the creator answers a
+     * future date with the key in force now, and that answer must be held
+     * against now rather than against a minute the creator has not spoken
+     * for. Held against the future minute, the key would still be served
+     * for that minute after the creator had rotated, and a genuine
+     * identifier signed then would read as not matching.</p>
+     */
+    private static long minuteOf(String url) {
+        long now = Io.minutesSinceBase(Instant.now());
+        int query = url.indexOf('?');
+        if (query < 0) {
+            return now;
+        }
+        for (String pair : url.substring(query + 1).split("&")) {
+            if (pair.startsWith("date=")) {
+                try {
+                    return Math.min(Long.parseLong(pair.substring(5)), now);
+                } catch (NumberFormatException notANumber) {
+                    return now;
+                }
+            }
+        }
+        return now;
+    }
+
+    /**
+     * The key held for the end point whose confirmed span covers the minute,
+     * or null where no held key does. Called under the lock.
+     */
+    private static String heldPem(String endPoint, long minute) {
+        List<HeldKey> keys = CACHE.get(endPoint);
+        if (keys != null) {
+            for (HeldKey key : keys) {
+                if (key.covers(minute)) {
+                    return key.pem;
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Records that the creator answered the minute with the key. Called
+     * under the lock.
+     *
+     * <p>A key already held for the end point has its span widened to take
+     * in the minute. A key not held before is added, emptying the cache
+     * first when it is full, because the domains and dates asked about come
+     * from the identifiers presented to this process and the cache must not
+     * grow on their input.</p>
+     */
+    private static void hold(String endPoint, long minute, String pem) {
+        List<HeldKey> keys = CACHE.get(endPoint);
+        if (keys != null) {
+            for (HeldKey key : keys) {
+                if (key.pem.equals(pem) && widen(keys, key, minute)) {
+                    return;
+                }
+            }
+        }
+        if (heldKeys >= MAXIMUM_CACHED_KEYS) {
+            CACHE.clear();
+            heldKeys = 0;
+            keys = null;
+        }
+        if (keys == null) {
+            keys = new ArrayList<HeldKey>();
+            CACHE.put(endPoint, keys);
+        }
+        keys.add(new HeldKey(pem, minute));
+        heldKeys++;
+    }
+
+    /**
+     * Widens the span of a held key to take in the minute, and says whether
+     * the minute is now within it.
+     *
+     * <p>The span is not widened across a minute the creator has answered
+     * with another key for, because that would mean the creator had gone
+     * back to a key it had left, and the minutes between the two spans are
+     * then not this key's to claim. The key is held again as a separate span
+     * instead.</p>
+     */
+    private static boolean widen(List<HeldKey> keys, HeldKey key,
+            long minute) {
+        if (key.covers(minute)) {
+            return true;
+        }
+        long from = Math.min(minute, key.first);
+        long to = Math.max(minute, key.last);
+        for (HeldKey other : keys) {
+            if (other != key && other.last > from && other.first < to) {
+                return false;
+            }
+        }
+        if (minute < key.first) {
+            key.first = minute;
+        } else {
+            key.last = minute;
+        }
+        return true;
     }
 
     /** A future that has already failed with the exception given. */

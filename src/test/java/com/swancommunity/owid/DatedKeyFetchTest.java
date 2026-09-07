@@ -24,9 +24,11 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.lang.reflect.Field;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -604,5 +606,197 @@ class DatedKeyFetchTest {
                 owid.getSignature()),
                 "the crafted OWID carries no real signature");
         return owid;
+    }
+
+    /** The minute count for a moment, counted the way the key URL counts it. */
+    private static long minutes(String moment) {
+        return Io.minutesSinceBase(Instant.parse(moment));
+    }
+
+    /** A key URL on the end point for the minute given. */
+    private static String urlFor(KeyEndPoint endPoint, long minute) {
+        return endPoint.base() + "/owid/api/v3/public-key?date=" + minute
+                + "&format=pkcs";
+    }
+
+    /** The PEM the published schedule says was in force at the minute. */
+    private static String inForce(long minute) throws OwidException {
+        return KeyFixtures.schedule()
+                .keyInForce(Io.baseDate().plus(Duration.ofMinutes(minute)))
+                .getPublicKeyPem();
+    }
+
+    /**
+     * A key the creator has confirmed for two minutes is served for every
+     * minute between them without a request, because a key is in force from
+     * the start of its period until the next key starts. A minute outside
+     * every confirmed span is asked about.
+     */
+    @Test
+    void aMinuteBetweenTwoConfirmedMinutesIsServedFromTheCache()
+            throws IOException, OwidException {
+        KeyEndPoint endPoint = endPoint(KeyEndPoint.Answer.SCHEDULE);
+        // The week of 31 August 2026, which the fixture identifier was
+        // signed in, and which is wholly in the past so the cache reads
+        // each minute as itself rather than as now.
+        long first = minutes("2026-08-31T00:01:00Z");
+        long last = minutes("2026-09-06T23:00:00Z");
+        String pem = pemAt(urlFor(endPoint, first),
+                KeyFixtures.IDENTIFIER_DOMAIN);
+        assertEquals(pem, pemAt(urlFor(endPoint, last),
+                KeyFixtures.IDENTIFIER_DOMAIN), "one key covers the week");
+        assertEquals(2, endPoint.dates().size(),
+                "the two ends of the span were asked about");
+        for (long between : new long[] {
+                first + 1, first + 3 * 24 * 60, last - 1 }) {
+            assertEquals(pem, pemAt(urlFor(endPoint, between),
+                    KeyFixtures.IDENTIFIER_DOMAIN),
+                    "the key served for minute " + between);
+        }
+        assertEquals(2, endPoint.dates().size(),
+                "a minute between two confirmed minutes is not asked about");
+        assertEquals(1, PublicKeyFetch.cachedKeyCount(),
+                "one key is held however many minutes it covers");
+        assertNotEquals(pem, pemAt(urlFor(endPoint, first - 2),
+                KeyFixtures.IDENTIFIER_DOMAIN),
+                "a minute in the week before is the earlier week's key");
+        assertEquals(3, endPoint.dates().size(),
+                "a minute before the span is asked about");
+        assertEquals(2, PublicKeyFetch.cachedKeyCount(),
+                "the earlier week's key is held as a second key");
+    }
+
+    /**
+     * The case that made the cache almost useless when it was keyed by the
+     * whole URL. A hundred identifiers with a hundred different minutes
+     * inside one key's period cost a hundred requests then. With the ends
+     * of the period confirmed they cost none.
+     */
+    @Test
+    void aHundredIdentifiersInOneConfirmedPeriodMakeNoRequest()
+            throws IOException, OwidException {
+        KeyEndPoint endPoint = endPoint(KeyEndPoint.Answer.SCHEDULE);
+        long start = minutes("2026-09-01T00:00:00Z");
+        pemAt(urlFor(endPoint, start), KeyFixtures.IDENTIFIER_DOMAIN);
+        pemAt(urlFor(endPoint, start + 100), KeyFixtures.IDENTIFIER_DOMAIN);
+        for (int i = 1; i <= 100; i++) {
+            pemAt(urlFor(endPoint, start + i), KeyFixtures.IDENTIFIER_DOMAIN);
+        }
+        assertEquals(2, endPoint.dates().size(),
+                "a hundred identifiers over a hundred minutes made no "
+                        + "request once both ends of the span were known");
+    }
+
+    /**
+     * A key is only ever served for a minute inside the span the creator
+     * has confirmed it for. Where the creator rotated between two confirmed
+     * minutes, the minutes between them belong to neither key until the
+     * creator is asked, and every answer agrees with the published
+     * schedule.
+     */
+    @Test
+    void aKeyIsNeverServedForAMinuteOutsideItsConfirmedSpan()
+            throws IOException, OwidException {
+        KeyEndPoint endPoint = endPoint(KeyEndPoint.Answer.SCHEDULE);
+        long rotation = minutes("2026-08-31T00:00:00Z");
+        long week = 7 * 24 * 60;
+        // The start of the week before the rotation and the end of the week
+        // after it, so the two keys are held with the rotation between.
+        pemAt(urlFor(endPoint, rotation - week), KeyFixtures.IDENTIFIER_DOMAIN);
+        pemAt(urlFor(endPoint, rotation + week - 1),
+                KeyFixtures.IDENTIFIER_DOMAIN);
+        assertEquals(2, endPoint.dates().size());
+        assertEquals(2, PublicKeyFetch.cachedKeyCount());
+
+        // Every minute across the rotation, in an order that walks in from
+        // both sides, is answered with the key the schedule gives, whether
+        // from the cache or by asking.
+        long[] minutes = {
+                rotation - 1, rotation, rotation - 2, rotation + 1,
+                rotation - week / 2, rotation + week / 2,
+                rotation - 3, rotation + 2, rotation - 1, rotation };
+        for (long minute : minutes) {
+            assertEquals(inForce(minute), pemAt(urlFor(endPoint, minute),
+                    KeyFixtures.IDENTIFIER_DOMAIN),
+                    "the key served for minute " + minute);
+        }
+        assertEquals(2, PublicKeyFetch.cachedKeyCount(),
+                "two keys are held, each with its own span");
+        int asked = endPoint.dates().size();
+        assertTrue(asked > 2 && asked < 2 + minutes.length,
+                "some minutes were asked about and some were served: "
+                        + asked);
+
+        // The minute either side of the rotation is now confirmed, so
+        // nothing across the whole fortnight needs asking.
+        for (long minute = rotation - week; minute < rotation + week;
+                minute += 60) {
+            assertEquals(inForce(minute), pemAt(urlFor(endPoint, minute),
+                    KeyFixtures.IDENTIFIER_DOMAIN),
+                    "the key served for minute " + minute);
+        }
+        assertEquals(asked, endPoint.dates().size(),
+                "both spans are fully confirmed, so nothing was asked");
+    }
+
+    /**
+     * A date later than now is held against now, because a creator answers
+     * a future date with the key in force now and a key held against a
+     * minute the creator has not spoken for would be served for that minute
+     * after the creator had rotated. Two future dates therefore share one
+     * request, and so does a request with no date.
+     */
+    @Test
+    void aFutureDateIsHeldAgainstNow() throws IOException, OwidException {
+        KeyEndPoint endPoint = endPoint(KeyEndPoint.Answer.SCHEDULE);
+        long started = Io.minutesSinceBase(Instant.now());
+        long week = 7 * 24 * 60;
+        pemAt(urlFor(endPoint, started + week), KeyFixtures.IDENTIFIER_DOMAIN);
+        pemAt(urlFor(endPoint, started + 2 * week),
+                KeyFixtures.IDENTIFIER_DOMAIN);
+        pemAt(endPoint.base() + "/owid/api/v3/public-key?format=pkcs",
+                KeyFixtures.IDENTIFIER_DOMAIN);
+        assumeTrue(Io.minutesSinceBase(Instant.now()) == started,
+                "the minute changed during the test, so the calls were not "
+                        + "all about the same now");
+        assertEquals(1, endPoint.dates().size(),
+                "two future dates and no date are all now, and now was "
+                        + "asked about once");
+    }
+
+    /**
+     * The cache does not grow without limit. The number of distinct keys a
+     * verifier is shown is chosen by whoever presents the identifiers rather
+     * than by this process, so the stand in creator here answers every
+     * minute with a different key, which is the worst a creator can do to
+     * the cache. The bound is read from the library so the test cannot
+     * drift from it.
+     */
+    @Test
+    void theCacheIsBounded() throws Exception {
+        Field bound = PublicKeyFetch.class.getDeclaredField(
+                "MAXIMUM_CACHED_KEYS");
+        bound.setAccessible(true);
+        int maximum = bound.getInt(null);
+        final AtomicInteger requests = new AtomicInteger();
+        PublicKeyTransport distinct = (url, domain) -> {
+            requests.incrementAndGet();
+            String minute = url.substring(url.indexOf("date=") + 5,
+                    url.indexOf("&format"));
+            return CompletableFuture.completedFuture(
+                    "-----BEGIN PUBLIC KEY-----\n" + minute
+                            + "\n-----END PUBLIC KEY-----\n");
+        };
+        for (int i = 0; i <= maximum; i++) {
+            PublicKeyFetch.publicKeyPemAtUrl(
+                    "https://example.invalid/owid/api/v3/public-key?date=" + i
+                            + "&format=pkcs",
+                    "example.invalid", distinct).join();
+        }
+        assertEquals(maximum + 1, requests.get(),
+                "every minute was a different key, so every one was asked");
+        assertTrue(PublicKeyFetch.cachedKeyCount() <= maximum,
+                "held " + PublicKeyFetch.cachedKeyCount() + " of at most "
+                        + maximum);
     }
 }
