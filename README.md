@@ -476,8 +476,6 @@ domain, a null payload, or a field that cannot be serialized.
   no generation moment, so nothing can select by one.
 - `Endpoints` provides framework agnostic helpers for the well known end
   points.
-  - `creatorResponse` returns JSON with the fields `domain`, `name`,
-    `publicKeySPKI`, and `contractURL`. The path is `/owid/api/v{n}/creator`.
   - `publicKeyResponse` returns the JSON body of the public key end point
     for a creator with one key and no schedule. The path is
     `/owid/api/v{n}/public-key` with a `format` parameter of `spki` or `pkcs`.

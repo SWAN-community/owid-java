@@ -32,29 +32,9 @@ class EndpointsTest {
 
     @Test
     void paths() {
-        assertEquals("/owid/api/v3/creator",
-                Endpoints.creatorPath(Version.VERSION3),
-                "should match the creator path");
         assertEquals("/owid/api/v3/public-key",
                 Endpoints.publicKeyPath(Version.VERSION3),
                 "should match the public key path");
-    }
-
-    @Test
-    void creatorResponseFields() throws OwidException {
-        Creator creator = newCreator();
-        String body = Endpoints.creatorResponse(creator, "Example Org",
-                "https://example.com/terms");
-        assertTrue(body.contains("\"domain\":\"example.com\""),
-                "should contain the domain");
-        assertTrue(body.contains("\"name\":\"Example Org\""),
-                "should contain the name");
-        assertTrue(body.contains("publicKeySPKI"),
-                "should use the specification field names");
-        assertTrue(body.contains("BEGIN PUBLIC KEY"),
-                "should embed the public key PEM");
-        assertTrue(body.contains("\"contractURL\":\"https://example.com/terms\""),
-                "should contain the contract URL");
     }
 
     @Test

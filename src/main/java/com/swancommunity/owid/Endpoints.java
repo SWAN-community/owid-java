@@ -23,31 +23,14 @@ import java.time.Instant;
  * specification. These are framework agnostic. They return the path and body
  * so that any HTTP server can serve them.
  *
- * <p>The mandatory end points are:</p>
- *
- * <ul>
- *   <li>{@code /owid/api/v{version}/creator} returning JSON with the domain,
- *       common name, and public key of the creator.</li>
- *   <li>{@code /owid/api/v{version}/public-key} returning a JSON object
- *       carrying the public key as {@code publicKeySPKI} together with the
- *       moments it is valid from and to. The {@code format} query parameter
- *       must be {@code spki} or {@code pkcs}.</li>
- * </ul>
+ * <p>The mandatory end point is {@code /owid/api/v{version}/public-key},
+ * returning a JSON object carrying the public key as {@code publicKeySPKI}
+ * together with the moments it is valid from and to. The {@code format}
+ * query parameter must be {@code spki} or {@code pkcs}.</p>
  */
 public final class Endpoints {
 
     private Endpoints() {
-    }
-
-    /**
-     * Returns the path of the creator end point for the version provided. For
-     * example {@code /owid/api/v3/creator}.
-     *
-     * @param version the OWID version
-     * @return the creator path
-     */
-    public static String creatorPath(Version version) {
-        return "/owid/api/v" + (version.asByte() & 0xFF) + "/creator";
     }
 
     /**
@@ -59,33 +42,6 @@ public final class Endpoints {
      */
     public static String publicKeyPath(Version version) {
         return "/owid/api/v" + (version.asByte() & 0xFF) + "/public-key";
-    }
-
-    /**
-     * Returns the JSON body for the creator end point. The JSON has the
-     * fields domain, name, publicKeySPKI, and contractURL named exactly as
-     * required by the specification.
-     *
-     * @param creator     the creator
-     * @param name        the common name of the creator
-     * @param contractUrl the URL with the terms associated with the data
-     * @return the JSON body
-     * @throws OwidException if the public key cannot be exported
-     */
-    public static String creatorResponse(Creator creator, String name,
-            String contractUrl) throws OwidException {
-        String spki = creator.crypto().subjectPublicKeyInfo();
-        StringBuilder json = new StringBuilder();
-        json.append('{');
-        appendField(json, "domain", creator.domain());
-        json.append(',');
-        appendField(json, "name", name);
-        json.append(',');
-        appendField(json, "publicKeySPKI", spki);
-        json.append(',');
-        appendField(json, "contractURL", contractUrl);
-        json.append('}');
-        return json.toString();
     }
 
     /**
@@ -213,43 +169,5 @@ public final class Endpoints {
         }
         return new Response(200, publicKeyAnswer(key.getPublicKeyPem(),
                 key.getStartsAt(), schedule.nextStartAfter(key), asked));
-    }
-
-    private static void appendField(StringBuilder json, String name,
-            String value) {
-        json.append('"').append(name).append("\":\"")
-                .append(escape(value)).append('"');
-    }
-
-    /** Escapes a string for inclusion in a JSON string literal. */
-    private static String escape(String value) {
-        StringBuilder builder = new StringBuilder(value.length());
-        for (int i = 0; i < value.length(); i++) {
-            char c = value.charAt(i);
-            switch (c) {
-                case '"':
-                    builder.append("\\\"");
-                    break;
-                case '\\':
-                    builder.append("\\\\");
-                    break;
-                case '\n':
-                    builder.append("\\n");
-                    break;
-                case '\r':
-                    builder.append("\\r");
-                    break;
-                case '\t':
-                    builder.append("\\t");
-                    break;
-                default:
-                    if (c < 0x20) {
-                        builder.append(String.format("\\u%04x", (int) c));
-                    } else {
-                        builder.append(c);
-                    }
-            }
-        }
-        return builder.toString();
     }
 }
