@@ -81,7 +81,13 @@ final class KeyEndPoint {
          * A redirect to somewhere else, which a client must not follow.
          * Started with {@link #start(Answer, String)} naming where.
          */
-        REDIRECT
+        REDIRECT,
+
+        /**
+         * The body given, whatever the request asks for. Started with
+         * {@link #start(Answer, String)} naming the body.
+         */
+        GIVEN
     }
 
     private final HttpServer server;
@@ -107,9 +113,10 @@ final class KeyEndPoint {
 
     /**
      * Starts an end point serving what the answer says, redirecting to
-     * the URL given where the answer is {@link Answer#REDIRECT}.
+     * the URL given where the answer is {@link Answer#REDIRECT} and
+     * answering with the body given where it is {@link Answer#GIVEN}.
      */
-    static KeyEndPoint start(final Answer answer, final String redirectTo)
+    static KeyEndPoint start(final Answer answer, final String given)
             throws IOException, OwidException {
         final PublicKeySchedule schedule = KeyFixtures.schedule();
         HttpServer server = HttpServer.create(new InetSocketAddress(
@@ -124,14 +131,16 @@ final class KeyEndPoint {
                 String format = parameter(query, "format");
                 endPoint.dates.add(date);
                 if (answer == Answer.REDIRECT) {
-                    exchange.getResponseHeaders().set("Location", redirectTo);
+                    exchange.getResponseHeaders().set("Location", given);
                     exchange.sendResponseHeaders(302, -1);
                     exchange.close();
                     return;
                 }
                 Endpoints.Response response;
                 try {
-                    response = body(schedule, answer, date, format);
+                    response = answer == Answer.GIVEN
+                            ? new Endpoints.Response(200, given)
+                            : body(schedule, answer, date, format);
                 } catch (OwidException fault) {
                     exchange.sendResponseHeaders(500, -1);
                     exchange.close();

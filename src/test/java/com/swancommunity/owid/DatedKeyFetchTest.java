@@ -871,13 +871,18 @@ class DatedKeyFetchTest {
     @Test
     void aRecentMinuteIsServedWhereTheCreatorStatedTheSpan()
             throws IOException, OwidException {
-        KeyEndPoint endPoint = endPoint(KeyEndPoint.Answer.SCHEDULE);
-        Instant now = Instant.now();
-        DatedPublicKey current = KeyFixtures.schedule().keyInForce(now);
-        assumeTrue(current != null
-                && KeyFixtures.schedule().nextStartAfter(current) != null,
-                "the fixture schedule has no key after the one in force now");
-        long started = Io.minutesSinceBase(now);
+        long started = Io.minutesSinceBase(Instant.now());
+        long day = 24 * 60;
+        // One key covering the day either side of now, so the span the
+        // creator states holds every minute asked about whenever the test
+        // runs.
+        KeyEndPoint endPoint = KeyEndPoint.start(KeyEndPoint.Answer.GIVEN,
+                Endpoints.publicKeyAnswer(
+                        KeyFixtures.scheduledKeys().get(0).pem(),
+                        Io.baseDate().plus(Duration.ofMinutes(started - day)),
+                        Io.baseDate().plus(Duration.ofMinutes(started + day)),
+                        null));
+        this.started.add(endPoint);
         pemAt(urlFor(endPoint, started - 1), KeyFixtures.IDENTIFIER_DOMAIN);
         pemAt(urlFor(endPoint, started), KeyFixtures.IDENTIFIER_DOMAIN);
         pemAt(urlFor(endPoint, started - 10), KeyFixtures.IDENTIFIER_DOMAIN);
